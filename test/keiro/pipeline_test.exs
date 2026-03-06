@@ -22,6 +22,27 @@ defmodule Keiro.PipelineTest do
         struct!(Stage, [])
       end
     end
+
+    test "runner_fn defaults to nil" do
+      stage = %Stage{
+        name: "test",
+        prompt_fn: fn _bead, _prev -> "prompt" end
+      }
+
+      assert stage.runner_fn == nil
+      assert stage.agent_module == nil
+    end
+
+    test "stage works without agent_module when runner_fn is set" do
+      stage = %Stage{
+        name: "custom",
+        prompt_fn: fn _bead, _prev -> "prompt" end,
+        runner_fn: fn _prompt, _ctx -> {:ok, "done"} end
+      }
+
+      assert is_function(stage.runner_fn, 2)
+      assert stage.agent_module == nil
+    end
   end
 
   describe "Result struct" do
@@ -111,6 +132,92 @@ defmodule Keiro.PipelineTest do
 
       # This will fail at agent start, but verifies the function accepts opts
       assert {:error, _} = Pipeline.run(bead, stages, tool_context: %{repo_path: "/tmp"})
+    end
+  end
+
+  describe "run/3 with runner_fn" do
+    test "stage with runner_fn bypasses Jido" do
+      bead = %Bead{id: "gl-010", title: "Runner fn test"}
+
+      stages = [
+        %Stage{
+          name: "custom",
+          prompt_fn: fn _bead, _prev -> "do the thing" end,
+          runner_fn: fn prompt, _ctx ->
+            {:ok, "ran: #{prompt}"}
+          end
+        }
+      ]
+
+      assert {:ok, result} = Pipeline.run(bead, stages)
+      assert result.status == :ok
+      assert [stage_result] = result.stages
+      assert stage_result.name == "custom"
+      assert stage_result.status == :ok
+      assert stage_result.result == "ran: do the thing"
+    end
+
+    test "runner_fn error propagates" do
+      bead = %Bead{id: "gl-011", title: "Runner fn error"}
+
+      stages = [
+        %Stage{
+          name: "failing",
+          prompt_fn: fn _bead, _prev -> "fail please" end,
+          runner_fn: fn _prompt, _ctx ->
+            {:error, "runner exploded"}
+          end
+        }
+      ]
+
+      assert {:error, result} = Pipeline.run(bead, stages)
+      assert result.status == :error
+      assert result.error_stage == "failing"
+      assert [stage_result] = result.stages
+      assert stage_result.result == "runner exploded"
+    end
+
+    test "runner_fn receives tool_context" do
+      test_pid = self()
+      bead = %Bead{id: "gl-012", title: "Context forwarding"}
+
+      stages = [
+        %Stage{
+          name: "ctx_check",
+          prompt_fn: fn _bead, _prev -> "prompt" end,
+          runner_fn: fn _prompt, ctx ->
+            send(test_pid, {:got_context, ctx})
+            {:ok, "ok"}
+          end
+        }
+      ]
+
+      Pipeline.run(bead, stages, tool_context: %{repo_path: "/my/repo"})
+      assert_received {:got_context, %{repo_path: "/my/repo"}}
+    end
+
+    test "runner_fn stage followed by Jido stage" do
+      bead = %Bead{id: "gl-013", title: "Mixed pipeline"}
+
+      stages = [
+        %Stage{
+          name: "custom_first",
+          prompt_fn: fn _bead, _prev -> "step 1" end,
+          runner_fn: fn _prompt, _ctx -> {:ok, "step 1 done"} end
+        },
+        %Stage{
+          name: "jido_second",
+          agent_module: NonExistentAgentModule,
+          prompt_fn: fn _bead, _prev -> "step 2" end,
+          timeout: 5_000
+        }
+      ]
+
+      # First stage succeeds (runner_fn), second fails (no Jido agent)
+      assert {:error, result} = Pipeline.run(bead, stages)
+      assert result.error_stage == "jido_second"
+      assert length(result.stages) == 2
+      assert hd(result.stages).status == :ok
     end
   end
 end

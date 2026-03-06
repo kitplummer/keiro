@@ -40,7 +40,12 @@ defmodule Keiro.Pipeline do
       result =
         Enum.reduce_while(stages, %Result{}, fn stage, acc ->
           Logger.info("Pipeline: starting stage #{stage.name}")
-          stage_meta = %{bead_id: bead.id, stage: stage.name, agent: stage.agent_module}
+
+          stage_meta = %{
+            bead_id: bead.id,
+            stage: stage.name,
+            agent: stage.agent_module || :custom_runner
+          }
 
           stage_result =
             Keiro.Telemetry.span([:keiro, :pipeline, :stage], stage_meta, fn ->
@@ -92,6 +97,14 @@ defmodule Keiro.Pipeline do
   defp run_stage(bead, stage, prev_stages, tool_context) do
     prompt = stage.prompt_fn.(bead, prev_stages)
 
+    if stage.runner_fn do
+      stage.runner_fn.(prompt, tool_context)
+    else
+      run_via_jido(bead, stage, prompt, tool_context)
+    end
+  end
+
+  defp run_via_jido(_bead, stage, prompt, tool_context) do
     try do
       case Jido.AgentServer.start(agent: stage.agent_module, jido: Keiro.Jido) do
         {:ok, pid} ->

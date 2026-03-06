@@ -246,6 +246,7 @@ defmodule Keiro.Orchestrator do
         name: "engineer",
         agent_module: Keiro.Eng.EngineerAgent,
         prompt_fn: &eng_prompt/2,
+        runner_fn: &claude_engineer_runner/2,
         timeout: timeout
       }
 
@@ -271,6 +272,11 @@ defmodule Keiro.Orchestrator do
           {:error, result}
       end
     end)
+  end
+
+  defp claude_engineer_runner(prompt, tool_context) do
+    repo_path = Map.get(tool_context, :repo_path, ".")
+    Keiro.Eng.ClaudeCli.run(prompt, repo_path, timeout: 300_000)
   end
 
   defp eng_prompt(bead, _prev_stages) do
