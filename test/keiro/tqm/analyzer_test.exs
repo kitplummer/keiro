@@ -61,7 +61,6 @@ defmodule Keiro.TQM.AnalyzerTest do
     end
 
     test "normalizes error messages for clustering" do
-      # Errors that differ only by hashes should cluster together
       results = [
         %{bead_id: "k-001", status: :error, error: "failed ref abc12345", agent: :a},
         %{bead_id: "k-002", status: :error, error: "failed ref def67890", agent: :b},
@@ -115,14 +114,13 @@ defmodule Keiro.TQM.AnalyzerTest do
       assert low_rate == nil
     end
 
-    test "supports custom thresholds" do
+    test "supports custom thresholds via config option" do
       results = [
         %{bead_id: "k-001", status: :error, error: "fail", agent: :uplink},
         %{bead_id: "k-002", status: :ok, agent: :eng}
       ]
 
-      # With threshold of 1, a single failure should trigger
-      patterns = Analyzer.analyze(results, %{agent_failure_threshold: 1})
+      patterns = Analyzer.analyze(results, config: %{agent_failure_threshold: 1})
       agent_pattern = Enum.find(patterns, &(&1.name == "repeated_agent_failures"))
       assert agent_pattern != nil
     end
@@ -159,6 +157,55 @@ defmodule Keiro.TQM.AnalyzerTest do
     end
   end
 
+  describe "custom detectors" do
+    defmodule TestDetector do
+      @behaviour Keiro.TQM.Detector
+
+      @impl true
+      def detect(results, _config) do
+        count = Enum.count(results, &(&1[:custom_field] == true))
+
+        if count > 0 do
+          [
+            %Pattern{
+              name: "custom_test",
+              severity: :info,
+              count: count,
+              threshold: 1,
+              description: "Custom detector found #{count} items",
+              remediation: "Custom fix"
+            }
+          ]
+        else
+          []
+        end
+      end
+    end
+
+    test "extra detectors are appended to defaults" do
+      results = [
+        %{bead_id: "k-001", status: :ok, agent: :a, custom_field: true}
+      ]
+
+      patterns = Analyzer.analyze(results, detectors: [TestDetector])
+      custom = Enum.find(patterns, &(&1.name == "custom_test"))
+      assert custom != nil
+      assert custom.count == 1
+    end
+
+    test "only option replaces default detectors" do
+      results =
+        for i <- 1..5 do
+          %{bead_id: "k-#{i}", status: :error, error: "fail", agent: :uplink, custom_field: true}
+        end
+
+      patterns = Analyzer.analyze(results, only: [TestDetector])
+      # Only custom detector should run, not built-ins
+      assert length(patterns) == 1
+      assert hd(patterns).name == "custom_test"
+    end
+  end
+
   describe "default_config/0" do
     test "returns map with all threshold keys" do
       config = Analyzer.default_config()
@@ -167,6 +214,17 @@ defmodule Keiro.TQM.AnalyzerTest do
       assert Map.has_key?(config, :error_cluster_threshold)
       assert Map.has_key?(config, :stage_failure_threshold)
       assert Map.has_key?(config, :success_rate_warning)
+    end
+  end
+
+  describe "default_detectors/0" do
+    test "returns four built-in detector modules" do
+      detectors = Analyzer.default_detectors()
+      assert length(detectors) == 4
+      assert Keiro.TQM.Detectors.AgentFailures in detectors
+      assert Keiro.TQM.Detectors.ErrorCluster in detectors
+      assert Keiro.TQM.Detectors.StageBottleneck in detectors
+      assert Keiro.TQM.Detectors.LowSuccessRate in detectors
     end
   end
 end
