@@ -30,4 +30,38 @@ defmodule Keiro.OrchestratorTest do
       assert {:error, :no_matching_agent} = Orchestrator.route(bead)
     end
   end
+
+  describe "GenServer loop" do
+    test "starts and schedules poll" do
+      # Use a very long interval so it doesn't fire during test
+      {:ok, pid} =
+        Orchestrator.start_link(
+          repo_path: "/tmp/nonexistent",
+          poll_interval: 600_000,
+          name: {:global, {__MODULE__, :start_test}}
+        )
+
+      assert Process.alive?(pid)
+      Orchestrator.stop(pid)
+    end
+
+    test "manual poll triggers processing" do
+      test_pid = self()
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          repo_path: "/tmp/nonexistent",
+          poll_interval: 600_000,
+          name: {:global, {__MODULE__, :poll_test}},
+          on_result: fn result -> send(test_pid, {:result, result}) end
+        )
+
+      # Manual poll — will get :no_work since /tmp/nonexistent has no beads
+      Orchestrator.poll(pid)
+      # Give it a moment to process
+      Process.sleep(100)
+      assert Process.alive?(pid)
+      Orchestrator.stop(pid)
+    end
+  end
 end

@@ -1,22 +1,111 @@
 defmodule Keiro.Orchestrator do
   @moduledoc """
-  Minimal task router for Phase 0.
+  Task router and polling loop for Keiro.
 
   Pulls ready beads from the task graph and routes them to the appropriate
-  agent based on labels/type. For Phase 0, all ops beads go to UplinkAgent.
+  agent based on labels/type. Can run as a one-shot or as a GenServer that
+  polls on an interval.
 
-  ## Usage
+  ## One-shot usage
 
-      # Pull and route one bead
       {:ok, result} = Keiro.Orchestrator.run_next(repo_path: "/path/to/lei")
-
-      # Process all ready beads
       results = Keiro.Orchestrator.run_all(repo_path: "/path/to/lei")
+
+  ## Polling loop
+
+      {:ok, pid} = Keiro.Orchestrator.start_link(
+        repo_path: "/path/to/lei",
+        poll_interval: 30_000
+      )
   """
+
+  use GenServer
 
   alias Keiro.Beads.Client, as: BeadsClient
 
   require Logger
+
+  # -- GenServer API --
+
+  @doc """
+  Start the orchestrator polling loop.
+
+  Options:
+  - `:repo_path` — path to the beads-enabled repo (required)
+  - `:poll_interval` — ms between polls (default: 30_000)
+  - `:timeout` — per-agent timeout in ms (default: 120_000)
+  - `:on_result` — callback fn receiving `%{bead_id, title, result}` (optional)
+  """
+  def start_link(opts) do
+    repo_path = Keyword.fetch!(opts, :repo_path)
+
+    GenServer.start_link(__MODULE__, opts,
+      name: Keyword.get(opts, :name, {:global, {__MODULE__, repo_path}})
+    )
+  end
+
+  @doc "Trigger an immediate poll outside the normal interval."
+  def poll(pid), do: GenServer.cast(pid, :poll)
+
+  @doc "Stop the orchestrator loop."
+  def stop(pid), do: GenServer.stop(pid, :normal)
+
+  @impl GenServer
+  def init(opts) do
+    repo_path = Keyword.fetch!(opts, :repo_path)
+    poll_interval = Keyword.get(opts, :poll_interval, 30_000)
+    timeout = Keyword.get(opts, :timeout, 120_000)
+    on_result = Keyword.get(opts, :on_result)
+
+    state = %{
+      repo_path: repo_path,
+      poll_interval: poll_interval,
+      timeout: timeout,
+      on_result: on_result,
+      running: false
+    }
+
+    schedule_poll(poll_interval)
+    {:ok, state}
+  end
+
+  @impl GenServer
+  def handle_info(:poll, %{running: true} = state) do
+    Logger.debug("Orchestrator: skipping poll, already processing")
+    {:noreply, state}
+  end
+
+  def handle_info(:poll, state) do
+    state = do_poll(state)
+    schedule_poll(state.poll_interval)
+    {:noreply, state}
+  end
+
+  @impl GenServer
+  def handle_cast(:poll, %{running: true} = state), do: {:noreply, state}
+  def handle_cast(:poll, state), do: {:noreply, do_poll(state)}
+
+  defp schedule_poll(interval) do
+    Process.send_after(self(), :poll, interval)
+  end
+
+  defp do_poll(state) do
+    state = %{state | running: true}
+
+    case run_next(repo_path: state.repo_path, timeout: state.timeout) do
+      {:ok, _result} = result ->
+        if state.on_result, do: state.on_result.(result)
+        %{state | running: false}
+
+      :no_work ->
+        Logger.debug("Orchestrator: no ready beads")
+        %{state | running: false}
+
+      {:error, reason} ->
+        Logger.warning("Orchestrator poll error: #{reason}")
+        %{state | running: false}
+    end
+  end
 
   @doc """
   Pull the next ready bead and route it to the appropriate agent.

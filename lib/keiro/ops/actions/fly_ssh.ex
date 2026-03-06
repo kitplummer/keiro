@@ -13,14 +13,18 @@ defmodule Keiro.Ops.Actions.FlySSH do
     ]
 
   alias Keiro.Ops.FlyCli
+  alias Keiro.Governance.Approval
 
   @impl Jido.Action
-  def run(params, _context) do
-    fly = FlyCli.fly_path()
+  def run(params, context) do
+    with {:ok, :approved} <-
+           Approval.require("SSH into #{params.app}: #{params.command}", context) do
+      fly = FlyCli.fly_path()
 
-    case FlyCli.run(fly, ["ssh", "console", "--app", params.app, "-C", params.command]) do
-      {:ok, output} -> {:ok, %{output: output}}
-      {:error, reason} -> {:error, reason}
+      case FlyCli.run(fly, ["ssh", "console", "--app", params.app, "-C", params.command]) do
+        {:ok, output} -> {:ok, %{output: output}}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 end

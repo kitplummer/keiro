@@ -29,14 +29,19 @@ defmodule Keiro.Ops.Actions.FileEdit do
     ~r/\.fly\//
   ]
 
+  alias Keiro.Governance.Approval
+
   @impl Jido.Action
-  def run(params, _context) do
+  def run(params, context) do
     path = params.path
 
     if allowed_path?(path) do
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, params.content)
-      {:ok, %{written: true, path: path, bytes: byte_size(params.content)}}
+      with {:ok, :approved} <-
+             Approval.require("Edit file: #{path} (#{byte_size(params.content)} bytes)", context) do
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, params.content)
+        {:ok, %{written: true, path: path, bytes: byte_size(params.content)}}
+      end
     else
       {:error,
        "outside SRE scope: #{path} — only infra files (Dockerfile, fly.toml, env.sh.eex, application.ex, runtime.exs) may be edited"}

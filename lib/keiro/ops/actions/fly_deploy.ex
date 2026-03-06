@@ -14,21 +14,25 @@ defmodule Keiro.Ops.Actions.FlyDeploy do
     ]
 
   alias Keiro.Ops.FlyCli
+  alias Keiro.Governance.Approval
 
   @impl Jido.Action
-  def run(params, _context) do
-    fly = FlyCli.fly_path()
+  def run(params, context) do
+    with {:ok, :approved} <-
+           Approval.require("Deploy #{params.app} from #{params.repo_path}", context) do
+      fly = FlyCli.fly_path()
 
-    args =
-      ["deploy", "--app", params.app] ++
-        if(Map.get(params, :no_cache, false), do: ["--no-cache"], else: [])
+      args =
+        ["deploy", "--app", params.app] ++
+          if(Map.get(params, :no_cache, false), do: ["--no-cache"], else: [])
 
-    case FlyCli.run(fly, args, cd: params.repo_path) do
-      {:ok, output} ->
-        {:ok, %{success: true, output: output}}
+      case FlyCli.run(fly, args, cd: params.repo_path) do
+        {:ok, output} ->
+          {:ok, %{success: true, output: output}}
 
-      {:error, reason} ->
-        {:ok, %{success: false, error: reason}}
+        {:error, reason} ->
+          {:ok, %{success: false, error: reason}}
+      end
     end
   end
 end
