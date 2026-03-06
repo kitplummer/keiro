@@ -2,9 +2,14 @@ defmodule Keiro.Beads.Bead do
   @moduledoc """
   Struct mirroring `bd list --json` output.
 
+  Implements `Keiro.Task` behaviour for use with the generic
+  TaskSource abstraction.
+
   Statuses: "open" | "in_progress" | "blocked" | "closed" | "deferred"
   Priority: 0-4 (P0=critical through P4=backlog), default 2
   """
+
+  use Keiro.Task
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
@@ -53,4 +58,24 @@ defmodule Keiro.Beads.Bead do
       created_at: map["created_at"]
     }
   end
+
+  # -- Keiro.Task callbacks --
+
+  @impl Keiro.Task
+  def id(%__MODULE__{id: id}), do: id
+
+  @impl Keiro.Task
+  def title(%__MODULE__{title: title}), do: title
+
+  @impl Keiro.Task
+  def description(%__MODULE__{description: desc}), do: desc
+
+  @impl Keiro.Task
+  def status(%__MODULE__{status: status}), do: status
+
+  @impl Keiro.Task
+  def priority(%__MODULE__{priority: priority}), do: priority
+
+  @impl Keiro.Task
+  def labels(%__MODULE__{labels: labels}), do: labels || []
 end
