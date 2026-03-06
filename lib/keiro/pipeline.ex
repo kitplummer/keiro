@@ -34,44 +34,59 @@ defmodule Keiro.Pipeline do
           {:ok, Result.t()} | {:error, Result.t()}
   def run(bead, stages, opts \\ []) do
     tool_context = Keyword.get(opts, :tool_context, %{})
+    pipeline_meta = %{bead_id: bead.id, stage_count: length(stages)}
 
-    result =
-      Enum.reduce_while(stages, %Result{}, fn stage, acc ->
-        Logger.info("Pipeline: starting stage #{stage.name}")
-        start_time = System.monotonic_time(:millisecond)
+    Keiro.Telemetry.span([:keiro, :pipeline, :run], pipeline_meta, fn ->
+      result =
+        Enum.reduce_while(stages, %Result{}, fn stage, acc ->
+          Logger.info("Pipeline: starting stage #{stage.name}")
+          stage_meta = %{bead_id: bead.id, stage: stage.name, agent: stage.agent_module}
 
-        case run_stage(bead, stage, acc.stages, tool_context) do
-          {:ok, stage_result} ->
-            elapsed = System.monotonic_time(:millisecond) - start_time
+          stage_result =
+            Keiro.Telemetry.span([:keiro, :pipeline, :stage], stage_meta, fn ->
+              run_stage(bead, stage, acc.stages, tool_context)
+            end)
 
-            stage_entry = %StageResult{
-              name: stage.name,
-              status: :ok,
-              result: stage_result,
-              elapsed_ms: elapsed
-            }
+          start_time = System.monotonic_time(:millisecond)
 
-            {:cont, %{acc | stages: acc.stages ++ [stage_entry]}}
+          case stage_result do
+            {:ok, sr} ->
+              elapsed = System.monotonic_time(:millisecond) - start_time
 
-          {:error, reason} ->
-            elapsed = System.monotonic_time(:millisecond) - start_time
+              stage_entry = %StageResult{
+                name: stage.name,
+                status: :ok,
+                result: sr,
+                elapsed_ms: elapsed
+              }
 
-            stage_entry = %StageResult{
-              name: stage.name,
-              status: :error,
-              result: reason,
-              elapsed_ms: elapsed
-            }
+              {:cont, %{acc | stages: acc.stages ++ [stage_entry]}}
 
-            {:halt,
-             %{acc | status: :error, error_stage: stage.name, stages: acc.stages ++ [stage_entry]}}
-        end
-      end)
+            {:error, reason} ->
+              elapsed = System.monotonic_time(:millisecond) - start_time
 
-    case result.status do
-      :ok -> {:ok, result}
-      :error -> {:error, result}
-    end
+              stage_entry = %StageResult{
+                name: stage.name,
+                status: :error,
+                result: reason,
+                elapsed_ms: elapsed
+              }
+
+              {:halt,
+               %{
+                 acc
+                 | status: :error,
+                   error_stage: stage.name,
+                   stages: acc.stages ++ [stage_entry]
+               }}
+          end
+        end)
+
+      case result.status do
+        :ok -> {:ok, result}
+        :error -> {:error, result}
+      end
+    end)
   end
 
   defp run_stage(bead, stage, prev_stages, tool_context) do

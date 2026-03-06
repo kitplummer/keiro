@@ -49,27 +49,35 @@ defmodule Keiro.Beads.Client do
   """
   @spec create(t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def create(%__MODULE__{} = client, title, opts \\ []) do
-    args =
-      ["create", title, "--silent"] ++
-        opt_args(opts, :id, "--id") ++
-        opt_args(opts, :type, "--type") ++
-        opt_args(opts, :priority, "--priority") ++
-        opt_args(opts, :description, "--description") ++
-        label_args(opts)
+    metadata = %{title: title, id: Keyword.get(opts, :id), priority: Keyword.get(opts, :priority)}
 
-    run_bd(client, args)
+    Keiro.Telemetry.span([:keiro, :beads, :create], metadata, fn ->
+      args =
+        ["create", title, "--silent"] ++
+          opt_args(opts, :id, "--id") ++
+          opt_args(opts, :type, "--type") ++
+          opt_args(opts, :priority, "--priority") ++
+          opt_args(opts, :description, "--description") ++
+          label_args(opts)
+
+      run_bd(client, args)
+    end)
   end
 
   @doc "Update a bead's status."
   @spec update_status(t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def update_status(%__MODULE__{} = client, id, status) do
-    run_bd(client, ["update", id, "--status", status])
+    Keiro.Telemetry.span([:keiro, :beads, :update_status], %{bead_id: id, status: status}, fn ->
+      run_bd(client, ["update", id, "--status", status])
+    end)
   end
 
   @doc "Close a bead."
   @spec close(t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def close(%__MODULE__{} = client, id) do
-    run_bd(client, ["close", id])
+    Keiro.Telemetry.span([:keiro, :beads, :close], %{bead_id: id}, fn ->
+      run_bd(client, ["close", id])
+    end)
   end
 
   @doc """
