@@ -215,7 +215,7 @@ defmodule Keiro.Orchestrator do
       prompt = "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
 
       try do
-        case Jido.AgentServer.start(agent: agent_module) do
+        case Jido.AgentServer.start(agent: agent_module, jido: Keiro.Jido) do
           {:ok, pid} ->
             result =
               agent_module.ask_sync(pid, prompt,

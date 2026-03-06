@@ -93,7 +93,7 @@ defmodule Keiro.Pipeline do
     prompt = stage.prompt_fn.(bead, prev_stages)
 
     try do
-      case Jido.AgentServer.start(agent: stage.agent_module) do
+      case Jido.AgentServer.start(agent: stage.agent_module, jido: Keiro.Jido) do
         {:ok, pid} ->
           try do
             result =

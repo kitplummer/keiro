@@ -44,7 +44,7 @@ defmodule Keiro.Arch.Scanner do
     }
 
     try do
-      case Jido.AgentServer.start(agent: ArchitectAgent) do
+      case Jido.AgentServer.start(agent: ArchitectAgent, jido: Keiro.Jido) do
         {:ok, pid} ->
           result =
             ArchitectAgent.ask_sync(pid, @scan_prompt,

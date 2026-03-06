@@ -70,7 +70,7 @@ defmodule Mix.Tasks.Keiro.Run do
         Mix.shell().info("No ready beads.")
 
       {:error, reason} ->
-        Mix.shell().error("Error: #{reason}")
+        Mix.shell().error("Error: #{inspect(reason)}")
     end
   end
 
