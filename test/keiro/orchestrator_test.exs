@@ -15,6 +15,36 @@ defmodule Keiro.OrchestratorTest do
       assert {:ok, Keiro.Ops.UplinkAgent} = Orchestrator.route(bead)
     end
 
+    test "routes eng-labeled beads to engineer pipeline" do
+      bead = %Bead{id: "gl-010", title: "Add feature", labels: ["eng"]}
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
+    end
+
+    test "routes eng + other labels to engineer pipeline" do
+      bead = %Bead{id: "gl-011", title: "Add feature", labels: ["eng", "lei"]}
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
+    end
+
+    test "eng label takes priority over ops" do
+      bead = %Bead{id: "gl-012", title: "Eng+ops", labels: ["eng", "ops"]}
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
+    end
+
+    test "routes arch-labeled beads to ArchitectAgent" do
+      bead = %Bead{id: "gl-020", title: "Triage issues", labels: ["arch"]}
+      assert {:ok, Keiro.Arch.ArchitectAgent} = Orchestrator.route(bead)
+    end
+
+    test "eng label takes priority over arch" do
+      bead = %Bead{id: "gl-021", title: "Eng+arch", labels: ["eng", "arch"]}
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
+    end
+
+    test "ops label takes priority over arch" do
+      bead = %Bead{id: "gl-022", title: "Ops+arch", labels: ["ops", "arch"]}
+      assert {:ok, Keiro.Ops.UplinkAgent} = Orchestrator.route(bead)
+    end
+
     test "returns error for beads without matching agent" do
       bead = %Bead{id: "gl-003", title: "Write docs", labels: ["docs"]}
       assert {:error, :no_matching_agent} = Orchestrator.route(bead)
