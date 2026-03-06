@@ -164,6 +164,7 @@ defmodule Keiro.Orchestrator do
 
   - "eng" beads route to the engineer pipeline (engineer → deploy)
   - "ops" beads route directly to UplinkAgent
+  - "arch" beads route directly to ArchitectAgent
   """
   @spec route(Keiro.Beads.Bead.t()) ::
           {:ok, :engineer_pipeline} | {:ok, module()} | {:error, :no_matching_agent}
@@ -173,6 +174,7 @@ defmodule Keiro.Orchestrator do
     cond do
       "eng" in labels -> {:ok, :engineer_pipeline}
       "ops" in labels -> {:ok, Keiro.Ops.UplinkAgent}
+      "arch" in labels -> {:ok, Keiro.Arch.ArchitectAgent}
       true -> {:error, :no_matching_agent}
     end
   end
