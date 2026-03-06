@@ -50,12 +50,20 @@ defmodule Keiro.Governance.Approval do
   defp default_prompt(description) do
     IO.puts("\n--- APPROVAL REQUIRED ---")
     IO.puts("Action: #{description}")
-    response = IO.gets("Approve? [y/N] ") |> String.trim() |> String.downcase()
 
-    if response in ["y", "yes"] do
-      :approved
-    else
-      :rejected
+    case IO.gets("Approve? [y/N] ") do
+      nil ->
+        IO.puts("No interactive terminal — rejecting")
+        :rejected
+
+      response ->
+        normalized = response |> String.trim() |> String.downcase()
+
+        if normalized in ["y", "yes"] do
+          :approved
+        else
+          :rejected
+        end
     end
   end
 end
