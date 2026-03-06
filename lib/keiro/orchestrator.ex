@@ -22,6 +22,8 @@ defmodule Keiro.Orchestrator do
   use GenServer
 
   alias Keiro.Beads.Client, as: BeadsClient
+  alias Keiro.Pipeline
+  alias Keiro.Pipeline.Stage
 
   require Logger
 
@@ -102,7 +104,7 @@ defmodule Keiro.Orchestrator do
         %{state | running: false}
 
       {:error, reason} ->
-        Logger.warning("Orchestrator poll error: #{reason}")
+        Logger.warning("Orchestrator poll error: #{inspect(reason)}")
         %{state | running: false}
     end
   end
@@ -127,7 +129,7 @@ defmodule Keiro.Orchestrator do
       {:ok, [bead | _]} ->
         Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
         BeadsClient.update_status(client, bead.id, "in_progress")
-        dispatch(bead, timeout)
+        dispatch(bead, timeout, repo_path: repo_path)
 
       {:error, reason} ->
         {:error, "Failed to fetch ready beads: #{reason}"}
@@ -147,7 +149,7 @@ defmodule Keiro.Orchestrator do
         Enum.map(beads, fn bead ->
           Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
           BeadsClient.update_status(client, bead.id, "in_progress")
-          result = dispatch(bead, Keyword.get(opts, :timeout, 60_000))
+          result = dispatch(bead, Keyword.get(opts, :timeout, 60_000), repo_path: repo_path)
           %{bead_id: bead.id, title: bead.title, result: result}
         end)
 
@@ -158,15 +160,18 @@ defmodule Keiro.Orchestrator do
   end
 
   @doc """
-  Route a bead to the appropriate agent based on labels.
+  Route a bead to the appropriate agent or pipeline based on labels.
 
-  Phase 0: all beads with "ops" label go to UplinkAgent.
+  - "eng" beads route to the engineer pipeline (engineer → deploy)
+  - "ops" beads route directly to UplinkAgent
   """
-  @spec route(Keiro.Beads.Bead.t()) :: {:ok, module()} | {:error, :no_matching_agent}
+  @spec route(Keiro.Beads.Bead.t()) ::
+          {:ok, :engineer_pipeline} | {:ok, module()} | {:error, :no_matching_agent}
   def route(bead) do
     labels = bead.labels || []
 
     cond do
+      "eng" in labels -> {:ok, :engineer_pipeline}
       "ops" in labels -> {:ok, Keiro.Ops.UplinkAgent}
       true -> {:error, :no_matching_agent}
     end
@@ -174,20 +179,16 @@ defmodule Keiro.Orchestrator do
 
   # -- private --
 
-  defp dispatch(bead, timeout) do
+  defp dispatch(bead, timeout, opts) do
+    repo_path = Keyword.get(opts, :repo_path)
+    tool_context = build_tool_context(opts)
+
     case route(bead) do
+      {:ok, :engineer_pipeline} ->
+        dispatch_pipeline(bead, timeout, repo_path, tool_context)
+
       {:ok, agent_module} ->
-        prompt = "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
-
-        case Jido.AgentServer.start(agent: agent_module) do
-          {:ok, pid} ->
-            result = agent_module.ask_sync(pid, prompt, timeout: timeout)
-            GenServer.stop(pid, :normal)
-            result
-
-          {:error, reason} ->
-            {:error, "Failed to start agent: #{inspect(reason)}"}
-        end
+        dispatch_agent(bead, agent_module, timeout, tool_context)
 
       {:error, :no_matching_agent} ->
         Logger.warning(
@@ -196,5 +197,95 @@ defmodule Keiro.Orchestrator do
 
         {:error, "no matching agent for labels: #{inspect(bead.labels)}"}
     end
+  end
+
+  defp dispatch_agent(bead, agent_module, timeout, tool_context) do
+    prompt = "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
+
+    try do
+      case Jido.AgentServer.start(agent: agent_module) do
+        {:ok, pid} ->
+          result =
+            agent_module.ask_sync(pid, prompt,
+              timeout: timeout,
+              tool_context: tool_context
+            )
+
+          GenServer.stop(pid, :normal)
+          result
+
+        {:error, reason} ->
+          {:error, "Failed to start agent: #{inspect(reason)}"}
+      end
+    catch
+      :exit, reason ->
+        {:error, "Failed to start agent: #{inspect(reason)}"}
+    end
+  end
+
+  defp dispatch_pipeline(bead, timeout, repo_path, tool_context) do
+    client = if repo_path, do: BeadsClient.new(repo_path), else: nil
+
+    stages = [
+      %Stage{
+        name: "engineer",
+        agent_module: Keiro.Eng.EngineerAgent,
+        prompt_fn: &eng_prompt/2,
+        timeout: timeout
+      },
+      %Stage{
+        name: "deploy",
+        agent_module: Keiro.Ops.UplinkAgent,
+        prompt_fn: &deploy_prompt/2,
+        timeout: timeout
+      }
+    ]
+
+    case Pipeline.run(bead, stages, tool_context: tool_context) do
+      {:ok, result} ->
+        Logger.info("Pipeline completed for bead #{bead.id}")
+        if client, do: BeadsClient.close(client, bead.id)
+        {:ok, result}
+
+      {:error, result} ->
+        Logger.warning("Pipeline failed at stage #{result.error_stage} for bead #{bead.id}")
+        if client, do: BeadsClient.update_status(client, bead.id, "blocked")
+        {:error, result}
+    end
+  end
+
+  defp eng_prompt(bead, _prev_stages) do
+    """
+    Bead #{bead.id}: #{bead.title}
+
+    #{bead.description || "No description."}
+
+    Implement this task: create a branch, write the code, run tests, and open a PR.
+    """
+  end
+
+  defp deploy_prompt(bead, prev_stages) do
+    eng_result =
+      case prev_stages do
+        [%{result: result} | _] -> "\n\nEngineer stage result: #{inspect(result)}"
+        _ -> ""
+      end
+
+    """
+    Bead #{bead.id}: #{bead.title}
+
+    The engineer has completed implementation. Deploy and verify.#{eng_result}
+    """
+  end
+
+  defp build_tool_context(opts) do
+    context = %{}
+
+    context =
+      if opts[:repo_path], do: Map.put(context, :repo_path, opts[:repo_path]), else: context
+
+    if opts[:approve_fn],
+      do: Map.put(context, :approve_fn, opts[:approve_fn]),
+      else: context
   end
 end

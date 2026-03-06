@@ -15,6 +15,21 @@ defmodule Keiro.OrchestratorTest do
       assert {:ok, Keiro.Ops.UplinkAgent} = Orchestrator.route(bead)
     end
 
+    test "routes eng-labeled beads to engineer pipeline" do
+      bead = %Bead{id: "gl-010", title: "Add feature", labels: ["eng"]}
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
+    end
+
+    test "routes eng + other labels to engineer pipeline" do
+      bead = %Bead{id: "gl-011", title: "Add feature", labels: ["eng", "lei"]}
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
+    end
+
+    test "eng label takes priority over ops" do
+      bead = %Bead{id: "gl-012", title: "Eng+ops", labels: ["eng", "ops"]}
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
+    end
+
     test "returns error for beads without matching agent" do
       bead = %Bead{id: "gl-003", title: "Write docs", labels: ["docs"]}
       assert {:error, :no_matching_agent} = Orchestrator.route(bead)
