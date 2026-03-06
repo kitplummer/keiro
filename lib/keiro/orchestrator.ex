@@ -202,58 +202,66 @@ defmodule Keiro.Orchestrator do
   end
 
   defp dispatch_agent(bead, agent_module, timeout, tool_context) do
-    prompt = "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
+    metadata = %{bead_id: bead.id, agent: agent_module, kind: :agent}
 
-    try do
-      case Jido.AgentServer.start(agent: agent_module) do
-        {:ok, pid} ->
-          result =
-            agent_module.ask_sync(pid, prompt,
-              timeout: timeout,
-              tool_context: tool_context
-            )
+    Keiro.Telemetry.span([:keiro, :orchestrator, :dispatch], metadata, fn ->
+      prompt = "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
 
-          GenServer.stop(pid, :normal)
-          result
+      try do
+        case Jido.AgentServer.start(agent: agent_module) do
+          {:ok, pid} ->
+            result =
+              agent_module.ask_sync(pid, prompt,
+                timeout: timeout,
+                tool_context: tool_context
+              )
 
-        {:error, reason} ->
+            GenServer.stop(pid, :normal)
+            result
+
+          {:error, reason} ->
+            {:error, "Failed to start agent: #{inspect(reason)}"}
+        end
+      catch
+        :exit, reason ->
           {:error, "Failed to start agent: #{inspect(reason)}"}
       end
-    catch
-      :exit, reason ->
-        {:error, "Failed to start agent: #{inspect(reason)}"}
-    end
+    end)
   end
 
   defp dispatch_pipeline(bead, timeout, repo_path, tool_context) do
-    client = if repo_path, do: BeadsClient.new(repo_path), else: nil
+    metadata = %{bead_id: bead.id, kind: :pipeline}
 
-    stages = [
-      %Stage{
-        name: "engineer",
-        agent_module: Keiro.Eng.EngineerAgent,
-        prompt_fn: &eng_prompt/2,
-        timeout: timeout
-      },
-      %Stage{
-        name: "deploy",
-        agent_module: Keiro.Ops.UplinkAgent,
-        prompt_fn: &deploy_prompt/2,
-        timeout: timeout
-      }
-    ]
+    Keiro.Telemetry.span([:keiro, :orchestrator, :dispatch], metadata, fn ->
+      client = if repo_path, do: BeadsClient.new(repo_path), else: nil
 
-    case Pipeline.run(bead, stages, tool_context: tool_context) do
-      {:ok, result} ->
-        Logger.info("Pipeline completed for bead #{bead.id}")
-        if client, do: BeadsClient.close(client, bead.id)
-        {:ok, result}
+      stages = [
+        %Stage{
+          name: "engineer",
+          agent_module: Keiro.Eng.EngineerAgent,
+          prompt_fn: &eng_prompt/2,
+          timeout: timeout
+        },
+        %Stage{
+          name: "deploy",
+          agent_module: Keiro.Ops.UplinkAgent,
+          prompt_fn: &deploy_prompt/2,
+          timeout: timeout
+        }
+      ]
 
-      {:error, result} ->
-        Logger.warning("Pipeline failed at stage #{result.error_stage} for bead #{bead.id}")
-        if client, do: BeadsClient.update_status(client, bead.id, "blocked")
-        {:error, result}
-    end
+      case Pipeline.run(bead, stages, tool_context: tool_context) do
+        {:ok, result} ->
+          Logger.info("Pipeline completed for bead #{bead.id}")
+          if client, do: BeadsClient.close(client, bead.id)
+          {:ok, result}
+
+        {:error, result} ->
+          Logger.warning("Pipeline failed at stage #{result.error_stage} for bead #{bead.id}")
+          if client, do: BeadsClient.update_status(client, bead.id, "blocked")
+          {:error, result}
+      end
+    end)
   end
 
   defp eng_prompt(bead, _prev_stages) do
