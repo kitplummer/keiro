@@ -24,6 +24,7 @@ defmodule Keiro.Orchestrator do
   alias Keiro.Beads.Client, as: BeadsClient
   alias Keiro.Pipeline
   alias Keiro.Pipeline.Stage
+  alias Keiro.Telemetry
 
   require Logger
 
@@ -182,21 +183,38 @@ defmodule Keiro.Orchestrator do
   defp dispatch(bead, timeout, opts) do
     repo_path = Keyword.get(opts, :repo_path)
     tool_context = build_tool_context(opts)
+    dispatch_meta = %{bead_id: bead.id, labels: bead.labels || []}
+    dispatch_start = Telemetry.span_start([:keiro, :orchestrator, :dispatch], dispatch_meta)
 
-    case route(bead) do
-      {:ok, :engineer_pipeline} ->
-        dispatch_pipeline(bead, timeout, repo_path, tool_context)
+    result =
+      case route(bead) do
+        {:ok, :engineer_pipeline} ->
+          dispatch_pipeline(bead, timeout, repo_path, tool_context)
 
-      {:ok, agent_module} ->
-        dispatch_agent(bead, agent_module, timeout, tool_context)
+        {:ok, agent_module} ->
+          dispatch_agent(bead, agent_module, timeout, tool_context)
 
-      {:error, :no_matching_agent} ->
-        Logger.warning(
-          "Orchestrator: no agent for bead #{bead.id} (labels: #{inspect(bead.labels)})"
-        )
+        {:error, :no_matching_agent} ->
+          Logger.warning(
+            "Orchestrator: no agent for bead #{bead.id} (labels: #{inspect(bead.labels)})"
+          )
 
-        {:error, "no matching agent for labels: #{inspect(bead.labels)}"}
-    end
+          {:error, "no matching agent for labels: #{inspect(bead.labels)}"}
+      end
+
+    complete_status =
+      case result do
+        {:ok, _} -> :ok
+        {:error, _} -> :error
+      end
+
+    Telemetry.span_stop(
+      [:keiro, :orchestrator, :complete],
+      dispatch_start,
+      Map.put(dispatch_meta, :status, complete_status)
+    )
+
+    result
   end
 
   defp dispatch_agent(bead, agent_module, timeout, tool_context) do

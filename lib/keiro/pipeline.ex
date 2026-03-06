@@ -18,6 +18,7 @@ defmodule Keiro.Pipeline do
 
   alias Keiro.Pipeline.{Stage, Result}
   alias Keiro.Pipeline.Result.StageResult
+  alias Keiro.Telemetry
 
   require Logger
 
@@ -35,14 +36,26 @@ defmodule Keiro.Pipeline do
   def run(bead, stages, opts \\ []) do
     tool_context = Keyword.get(opts, :tool_context, %{})
 
+    pipeline_meta = %{bead_id: bead.id, stage_count: length(stages)}
+    pipeline_start = Telemetry.span_start([:keiro, :pipeline, :start], pipeline_meta)
+
     result =
       Enum.reduce_while(stages, %Result{}, fn stage, acc ->
         Logger.info("Pipeline: starting stage #{stage.name}")
+
+        stage_meta = %{bead_id: bead.id, stage_name: stage.name, agent_module: stage.agent_module}
+        stage_start = Telemetry.span_start([:keiro, :pipeline, :stage, :start], stage_meta)
         start_time = System.monotonic_time(:millisecond)
 
         case run_stage(bead, stage, acc.stages, tool_context) do
           {:ok, stage_result} ->
             elapsed = System.monotonic_time(:millisecond) - start_time
+
+            Telemetry.span_stop(
+              [:keiro, :pipeline, :stage, :stop],
+              stage_start,
+              Map.put(stage_meta, :status, :ok)
+            )
 
             stage_entry = %StageResult{
               name: stage.name,
@@ -55,6 +68,12 @@ defmodule Keiro.Pipeline do
 
           {:error, reason} ->
             elapsed = System.monotonic_time(:millisecond) - start_time
+
+            Telemetry.span_stop(
+              [:keiro, :pipeline, :stage, :stop],
+              stage_start,
+              Map.put(stage_meta, :status, :error)
+            )
 
             stage_entry = %StageResult{
               name: stage.name,
@@ -69,8 +88,23 @@ defmodule Keiro.Pipeline do
       end)
 
     case result.status do
-      :ok -> {:ok, result}
-      :error -> {:error, result}
+      :ok ->
+        Telemetry.span_stop(
+          [:keiro, :pipeline, :stop],
+          pipeline_start,
+          Map.put(pipeline_meta, :status, :ok)
+        )
+
+        {:ok, result}
+
+      :error ->
+        Telemetry.span_stop(
+          [:keiro, :pipeline, :exception],
+          pipeline_start,
+          Map.merge(pipeline_meta, %{status: :error, error_stage: result.error_stage})
+        )
+
+        {:error, result}
     end
   end
 
