@@ -37,6 +37,7 @@ defmodule Keiro.Orchestrator do
   - `:poll_interval` — ms between polls (default: 30_000)
   - `:timeout` — per-agent timeout in ms (default: 120_000)
   - `:on_result` — callback fn receiving `%{bead_id, title, result}` (optional)
+  - `:approve_fn` — approval callback for governance (optional)
   """
   def start_link(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
@@ -58,12 +59,14 @@ defmodule Keiro.Orchestrator do
     poll_interval = Keyword.get(opts, :poll_interval, 30_000)
     timeout = Keyword.get(opts, :timeout, 120_000)
     on_result = Keyword.get(opts, :on_result)
+    approve_fn = Keyword.get(opts, :approve_fn)
 
     state = %{
       repo_path: repo_path,
       poll_interval: poll_interval,
       timeout: timeout,
       on_result: on_result,
+      approve_fn: approve_fn,
       running: false
     }
 
@@ -94,7 +97,11 @@ defmodule Keiro.Orchestrator do
   defp do_poll(state) do
     state = %{state | running: true}
 
-    case run_next(repo_path: state.repo_path, timeout: state.timeout) do
+    opts =
+      [repo_path: state.repo_path, timeout: state.timeout]
+      |> maybe_add(:approve_fn, state.approve_fn)
+
+    case run_next(opts) do
       {:ok, _result} = result ->
         if state.on_result, do: state.on_result.(result)
         %{state | running: false}
@@ -129,7 +136,7 @@ defmodule Keiro.Orchestrator do
       {:ok, [bead | _]} ->
         Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
         BeadsClient.update_status(client, bead.id, "in_progress")
-        dispatch(bead, timeout, repo_path: repo_path)
+        dispatch(bead, timeout, opts)
 
       {:error, reason} ->
         {:error, "Failed to fetch ready beads: #{reason}"}
@@ -149,7 +156,7 @@ defmodule Keiro.Orchestrator do
         Enum.map(beads, fn bead ->
           Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
           BeadsClient.update_status(client, bead.id, "in_progress")
-          result = dispatch(bead, Keyword.get(opts, :timeout, 60_000), repo_path: repo_path)
+          result = dispatch(bead, Keyword.get(opts, :timeout, 60_000), opts)
           %{bead_id: bead.id, title: bead.title, result: result}
         end)
 
@@ -235,20 +242,22 @@ defmodule Keiro.Orchestrator do
     Keiro.Telemetry.span([:keiro, :orchestrator, :dispatch], metadata, fn ->
       client = if repo_path, do: BeadsClient.new(repo_path), else: nil
 
-      stages = [
-        %Stage{
-          name: "engineer",
-          agent_module: Keiro.Eng.EngineerAgent,
-          prompt_fn: &eng_prompt/2,
-          timeout: timeout
-        },
-        %Stage{
-          name: "deploy",
-          agent_module: Keiro.Ops.UplinkAgent,
-          prompt_fn: &deploy_prompt/2,
-          timeout: timeout
-        }
-      ]
+      eng_stage = %Stage{
+        name: "engineer",
+        agent_module: Keiro.Eng.EngineerAgent,
+        prompt_fn: &eng_prompt/2,
+        timeout: timeout
+      }
+
+      deploy_stage = %Stage{
+        name: "deploy",
+        agent_module: Keiro.Ops.UplinkAgent,
+        prompt_fn: &deploy_prompt/2,
+        timeout: timeout
+      }
+
+      labels = bead.labels || []
+      stages = if "ops" in labels, do: [eng_stage, deploy_stage], else: [eng_stage]
 
       case Pipeline.run(bead, stages, tool_context: tool_context) do
         {:ok, result} ->
@@ -287,6 +296,9 @@ defmodule Keiro.Orchestrator do
     The engineer has completed implementation. Deploy and verify.#{eng_result}
     """
   end
+
+  defp maybe_add(opts, _key, nil), do: opts
+  defp maybe_add(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp build_tool_context(opts) do
     context = %{}

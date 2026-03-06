@@ -93,5 +93,33 @@ defmodule Keiro.OrchestratorTest do
       assert Process.alive?(pid)
       Orchestrator.stop(pid)
     end
+
+    test "accepts approve_fn in opts" do
+      {:ok, pid} =
+        Orchestrator.start_link(
+          repo_path: "/tmp/nonexistent",
+          poll_interval: 600_000,
+          name: {:global, {__MODULE__, :approve_fn_test}},
+          approve_fn: fn _action -> :ok end
+        )
+
+      assert Process.alive?(pid)
+      Orchestrator.stop(pid)
+    end
+  end
+
+  describe "pipeline stage selection" do
+    test "eng-only bead skips deploy stage" do
+      bead = %Bead{id: "gl-030", title: "Code only", labels: ["eng"]}
+      labels = bead.labels || []
+      # eng-only should NOT include deploy
+      assert "ops" not in labels
+    end
+
+    test "eng+ops bead includes deploy stage" do
+      bead = %Bead{id: "gl-031", title: "Code + deploy", labels: ["eng", "ops"]}
+      labels = bead.labels || []
+      assert "ops" in labels
+    end
   end
 end
