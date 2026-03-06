@@ -46,6 +46,44 @@ defmodule Keiro.OrchestratorTest do
     end
   end
 
+  describe "resolve_shape/2" do
+    test "resolves eng bead to Eng.Shape" do
+      bead = %Bead{id: "gl-010", title: "Add feature", labels: ["eng"]}
+      assert {:ok, Keiro.Eng.Shape} = Orchestrator.resolve_shape(bead)
+    end
+
+    test "resolves ops bead to Ops.Shape" do
+      bead = %Bead{id: "gl-020", title: "Fix crash", labels: ["ops"]}
+      assert {:ok, Keiro.Ops.Shape} = Orchestrator.resolve_shape(bead)
+    end
+
+    test "eng shape has priority over ops (listed first)" do
+      bead = %Bead{id: "gl-030", title: "Both", labels: ["eng", "ops"]}
+      assert {:ok, Keiro.Eng.Shape} = Orchestrator.resolve_shape(bead)
+    end
+
+    test "returns error for unmatched labels" do
+      bead = %Bead{id: "gl-040", title: "Docs", labels: ["docs"]}
+      assert {:error, :no_matching_shape} = Orchestrator.resolve_shape(bead)
+    end
+
+    test "accepts custom shape list" do
+      defmodule TestShape do
+        @behaviour Keiro.Pipeline.Shape
+        def match?(bead), do: "custom" in (bead.labels || [])
+        def stages(_bead, _opts), do: []
+      end
+
+      bead = %Bead{id: "gl-050", title: "Custom", labels: ["custom"]}
+      assert {:ok, TestShape} = Orchestrator.resolve_shape(bead, [TestShape])
+    end
+
+    test "returns error when custom list has no match" do
+      bead = %Bead{id: "gl-060", title: "Eng", labels: ["eng"]}
+      assert {:error, :no_matching_shape} = Orchestrator.resolve_shape(bead, [])
+    end
+  end
+
   describe "GenServer loop" do
     test "starts and schedules poll" do
       # Use a very long interval so it doesn't fire during test

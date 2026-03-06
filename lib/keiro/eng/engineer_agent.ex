@@ -51,6 +51,6 @@ defmodule Keiro.Eng.EngineerAgent do
     - If tests fail, diagnose and fix before moving on
     """,
     model: :capable,
-    max_iterations: 50,
+    max_iterations: 100,
     tool_timeout_ms: 120_000
 end

@@ -10,7 +10,7 @@ defmodule Keiro.Pipeline do
 
       stages = [
         %Stage{name: "engineer", agent_module: EngineerAgent, prompt_fn: &eng_prompt/2},
-        %Stage{name: "deploy", agent_module: UplinkAgent, prompt_fn: &deploy_prompt/2}
+        %Stage{name: "verify", agent_module: VerifyAgent, prompt_fn: &verify_prompt/2}
       ]
 
       {:ok, result} = Pipeline.run(bead, stages, tool_context: %{repo_path: "."})
@@ -26,6 +26,8 @@ defmodule Keiro.Pipeline do
 
   Options:
   - `:tool_context` — map passed to agent's `ask_sync` as `tool_context:` (optional)
+  - `:runner_fn` — `fn(bead, stage, prev_stages, tool_context) -> {:ok, result} | {:error, reason}`
+    Injectable stage runner for testing. When nil, uses real agent execution.
 
   Returns `{:ok, %Result{}}` when all stages succeed, or
   `{:error, %Result{}}` when a stage fails.
@@ -34,20 +36,28 @@ defmodule Keiro.Pipeline do
           {:ok, Result.t()} | {:error, Result.t()}
   def run(bead, stages, opts \\ []) do
     tool_context = Keyword.get(opts, :tool_context, %{})
+    runner_fn = Keyword.get(opts, :runner_fn)
 
     result =
       Enum.reduce_while(stages, %Result{}, fn stage, acc ->
         Logger.info("Pipeline: starting stage #{stage.name}")
         start_time = System.monotonic_time(:millisecond)
 
-        case run_stage(bead, stage, acc.stages, tool_context) do
-          {:ok, stage_result} ->
+        stage_result =
+          if runner_fn do
+            runner_fn.(bead, stage, acc.stages, tool_context)
+          else
+            run_stage(bead, stage, acc.stages, tool_context)
+          end
+
+        case stage_result do
+          {:ok, result} ->
             elapsed = System.monotonic_time(:millisecond) - start_time
 
             stage_entry = %StageResult{
               name: stage.name,
               status: :ok,
-              result: stage_result,
+              result: result,
               elapsed_ms: elapsed
             }
 
@@ -78,7 +88,7 @@ defmodule Keiro.Pipeline do
     prompt = stage.prompt_fn.(bead, prev_stages)
 
     try do
-      case Jido.AgentServer.start(agent: stage.agent_module) do
+      case Jido.AgentServer.start(agent: stage.agent_module, jido: Keiro.Jido) do
         {:ok, pid} ->
           try do
             result =

@@ -3,8 +3,8 @@ defmodule Keiro.Orchestrator do
   Task router and polling loop for Keiro.
 
   Pulls ready beads from the task graph and routes them to the appropriate
-  agent based on labels/type. Can run as a one-shot or as a GenServer that
-  polls on an interval.
+  pipeline shape based on labels. Can run as a one-shot or as a GenServer
+  that polls on an interval.
 
   ## One-shot usage
 
@@ -23,9 +23,13 @@ defmodule Keiro.Orchestrator do
 
   alias Keiro.Beads.Client, as: BeadsClient
   alias Keiro.Pipeline
-  alias Keiro.Pipeline.Stage
 
   require Logger
+
+  @default_shapes [
+    Keiro.Eng.Shape,
+    Keiro.Ops.Shape
+  ]
 
   # -- GenServer API --
 
@@ -37,6 +41,9 @@ defmodule Keiro.Orchestrator do
   - `:poll_interval` — ms between polls (default: 30_000)
   - `:timeout` — per-agent timeout in ms (default: 120_000)
   - `:on_result` — callback fn receiving `%{bead_id, title, result}` (optional)
+  - `:shapes` — list of shape modules (default: eng + ops)
+  - `:runner_fn` — injectable stage runner for testing (optional)
+  - `:approve_fn` — governance approval function (optional)
   """
   def start_link(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
@@ -58,12 +65,18 @@ defmodule Keiro.Orchestrator do
     poll_interval = Keyword.get(opts, :poll_interval, 30_000)
     timeout = Keyword.get(opts, :timeout, 120_000)
     on_result = Keyword.get(opts, :on_result)
+    shapes = Keyword.get(opts, :shapes, @default_shapes)
+    runner_fn = Keyword.get(opts, :runner_fn)
+    approve_fn = Keyword.get(opts, :approve_fn)
 
     state = %{
       repo_path: repo_path,
       poll_interval: poll_interval,
       timeout: timeout,
       on_result: on_result,
+      shapes: shapes,
+      runner_fn: runner_fn,
+      approve_fn: approve_fn,
       running: false
     }
 
@@ -94,9 +107,18 @@ defmodule Keiro.Orchestrator do
   defp do_poll(state) do
     state = %{state | running: true}
 
-    case run_next(repo_path: state.repo_path, timeout: state.timeout) do
-      {:ok, _result} = result ->
-        if state.on_result, do: state.on_result.(result)
+    result =
+      run_next(
+        repo_path: state.repo_path,
+        timeout: state.timeout,
+        shapes: state.shapes,
+        runner_fn: state.runner_fn,
+        approve_fn: state.approve_fn
+      )
+
+    case result do
+      {:ok, _result} = ok ->
+        if state.on_result, do: state.on_result.(ok)
         %{state | running: false}
 
       :no_work ->
@@ -110,16 +132,22 @@ defmodule Keiro.Orchestrator do
   end
 
   @doc """
-  Pull the next ready bead and route it to the appropriate agent.
+  Pull the next ready bead and route it to the appropriate pipeline shape.
 
   Options:
   - `:repo_path` — path to the beads-enabled repo (required)
   - `:timeout` — agent timeout in ms (default: 60_000)
+  - `:shapes` — list of shape modules (default: eng + ops)
+  - `:runner_fn` — injectable stage runner for testing (optional)
+  - `:approve_fn` — governance approval function (optional)
   """
   @spec run_next(keyword()) :: {:ok, map()} | {:error, String.t()} | :no_work
   def run_next(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
     timeout = Keyword.get(opts, :timeout, 60_000)
+    shapes = Keyword.get(opts, :shapes, @default_shapes)
+    runner_fn = Keyword.get(opts, :runner_fn)
+    approve_fn = Keyword.get(opts, :approve_fn)
     client = BeadsClient.new(repo_path)
 
     case BeadsClient.ready(client) do
@@ -129,7 +157,13 @@ defmodule Keiro.Orchestrator do
       {:ok, [bead | _]} ->
         Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
         BeadsClient.update_status(client, bead.id, "in_progress")
-        dispatch(bead, timeout, repo_path: repo_path)
+
+        dispatch(bead, timeout,
+          repo_path: repo_path,
+          shapes: shapes,
+          runner_fn: runner_fn,
+          approve_fn: approve_fn
+        )
 
       {:error, reason} ->
         {:error, "Failed to fetch ready beads: #{reason}"}
@@ -142,6 +176,10 @@ defmodule Keiro.Orchestrator do
   @spec run_all(keyword()) :: [map()]
   def run_all(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
+    timeout = Keyword.get(opts, :timeout, 60_000)
+    shapes = Keyword.get(opts, :shapes, @default_shapes)
+    runner_fn = Keyword.get(opts, :runner_fn)
+    approve_fn = Keyword.get(opts, :approve_fn)
     client = BeadsClient.new(repo_path)
 
     case BeadsClient.ready(client) do
@@ -149,7 +187,15 @@ defmodule Keiro.Orchestrator do
         Enum.map(beads, fn bead ->
           Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
           BeadsClient.update_status(client, bead.id, "in_progress")
-          result = dispatch(bead, Keyword.get(opts, :timeout, 60_000), repo_path: repo_path)
+
+          result =
+            dispatch(bead, timeout,
+              repo_path: repo_path,
+              shapes: shapes,
+              runner_fn: runner_fn,
+              approve_fn: approve_fn
+            )
+
           %{bead_id: bead.id, title: bead.title, result: result}
         end)
 
@@ -162,7 +208,7 @@ defmodule Keiro.Orchestrator do
   @doc """
   Route a bead to the appropriate agent or pipeline based on labels.
 
-  - "eng" beads route to the engineer pipeline (engineer → deploy)
+  - "eng" beads route to the engineer pipeline (engineer → verify)
   - "ops" beads route directly to UplinkAgent
   """
   @spec route(Keiro.Beads.Bead.t()) ::
@@ -177,105 +223,58 @@ defmodule Keiro.Orchestrator do
     end
   end
 
+  @doc """
+  Resolve the pipeline shape for a bead.
+
+  Iterates through the shape list in priority order and returns the first
+  matching shape module. Returns `{:error, :no_matching_shape}` if none match.
+  """
+  @spec resolve_shape(Keiro.Beads.Bead.t(), [module()]) ::
+          {:ok, module()} | {:error, :no_matching_shape}
+  def resolve_shape(bead, shapes \\ @default_shapes) do
+    case Enum.find(shapes, fn shape -> shape.match?(bead) end) do
+      nil -> {:error, :no_matching_shape}
+      shape -> {:ok, shape}
+    end
+  end
+
   # -- private --
 
   defp dispatch(bead, timeout, opts) do
     repo_path = Keyword.get(opts, :repo_path)
+    shapes = Keyword.get(opts, :shapes, @default_shapes)
+    runner_fn = Keyword.get(opts, :runner_fn)
     tool_context = build_tool_context(opts)
 
-    case route(bead) do
-      {:ok, :engineer_pipeline} ->
-        dispatch_pipeline(bead, timeout, repo_path, tool_context)
+    case resolve_shape(bead, shapes) do
+      {:ok, shape} ->
+        stages = shape.stages(bead, timeout: timeout)
+        client = if repo_path, do: BeadsClient.new(repo_path), else: nil
 
-      {:ok, agent_module} ->
-        dispatch_agent(bead, agent_module, timeout, tool_context)
+        pipeline_opts =
+          [tool_context: tool_context]
+          |> then(fn o -> if runner_fn, do: Keyword.put(o, :runner_fn, runner_fn), else: o end)
 
-      {:error, :no_matching_agent} ->
+        case Pipeline.run(bead, stages, pipeline_opts) do
+          {:ok, result} ->
+            Logger.info("Pipeline completed for bead #{bead.id}")
+            if client, do: BeadsClient.close(client, bead.id)
+            {:ok, result}
+
+          {:error, result} ->
+            Logger.warning("Pipeline failed at stage #{result.error_stage} for bead #{bead.id}")
+
+            if client, do: BeadsClient.update_status(client, bead.id, "blocked")
+            {:error, result}
+        end
+
+      {:error, :no_matching_shape} ->
         Logger.warning(
-          "Orchestrator: no agent for bead #{bead.id} (labels: #{inspect(bead.labels)})"
+          "Orchestrator: no shape for bead #{bead.id} (labels: #{inspect(bead.labels)})"
         )
 
-        {:error, "no matching agent for labels: #{inspect(bead.labels)}"}
+        {:error, "no matching shape for labels: #{inspect(bead.labels)}"}
     end
-  end
-
-  defp dispatch_agent(bead, agent_module, timeout, tool_context) do
-    prompt = "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
-
-    try do
-      case Jido.AgentServer.start(agent: agent_module) do
-        {:ok, pid} ->
-          result =
-            agent_module.ask_sync(pid, prompt,
-              timeout: timeout,
-              tool_context: tool_context
-            )
-
-          GenServer.stop(pid, :normal)
-          result
-
-        {:error, reason} ->
-          {:error, "Failed to start agent: #{inspect(reason)}"}
-      end
-    catch
-      :exit, reason ->
-        {:error, "Failed to start agent: #{inspect(reason)}"}
-    end
-  end
-
-  defp dispatch_pipeline(bead, timeout, repo_path, tool_context) do
-    client = if repo_path, do: BeadsClient.new(repo_path), else: nil
-
-    stages = [
-      %Stage{
-        name: "engineer",
-        agent_module: Keiro.Eng.EngineerAgent,
-        prompt_fn: &eng_prompt/2,
-        timeout: timeout
-      },
-      %Stage{
-        name: "deploy",
-        agent_module: Keiro.Ops.UplinkAgent,
-        prompt_fn: &deploy_prompt/2,
-        timeout: timeout
-      }
-    ]
-
-    case Pipeline.run(bead, stages, tool_context: tool_context) do
-      {:ok, result} ->
-        Logger.info("Pipeline completed for bead #{bead.id}")
-        if client, do: BeadsClient.close(client, bead.id)
-        {:ok, result}
-
-      {:error, result} ->
-        Logger.warning("Pipeline failed at stage #{result.error_stage} for bead #{bead.id}")
-        if client, do: BeadsClient.update_status(client, bead.id, "blocked")
-        {:error, result}
-    end
-  end
-
-  defp eng_prompt(bead, _prev_stages) do
-    """
-    Bead #{bead.id}: #{bead.title}
-
-    #{bead.description || "No description."}
-
-    Implement this task: create a branch, write the code, run tests, and open a PR.
-    """
-  end
-
-  defp deploy_prompt(bead, prev_stages) do
-    eng_result =
-      case prev_stages do
-        [%{result: result} | _] -> "\n\nEngineer stage result: #{inspect(result)}"
-        _ -> ""
-      end
-
-    """
-    Bead #{bead.id}: #{bead.title}
-
-    The engineer has completed implementation. Deploy and verify.#{eng_result}
-    """
   end
 
   defp build_tool_context(opts) do
