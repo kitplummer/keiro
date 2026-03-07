@@ -8,7 +8,8 @@ defmodule Keiro.MixProject do
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      test_coverage: [tool: ExCoveralls]
     ]
   end
 
@@ -24,7 +25,18 @@ defmodule Keiro.MixProject do
       {:jido, "~> 2.0"},
       {:jido_ai, "2.0.0-rc.0"},
       {:req_llm, "~> 1.6"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:excoveralls, "~> 0.18", only: :test, runtime: false}
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        coveralls: :test,
+        "coveralls.detail": :test,
+        "coveralls.html": :test
+      ]
     ]
   end
 
