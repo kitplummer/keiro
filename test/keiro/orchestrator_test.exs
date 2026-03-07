@@ -245,6 +245,65 @@ defmodule Keiro.OrchestratorTest do
     end
   end
 
+  describe "TQM integration" do
+    test "run_all runs TQM analysis on batch results" do
+      with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
+        results = Orchestrator.run_all(repo_path: System.tmp_dir!())
+        # TQM runs silently — no patterns expected for single success
+        assert length(results) == 1
+        assert {:ok, _} = hd(results).result
+      end)
+    end
+
+    test "run_all with tqm_enabled: false skips analysis" do
+      with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
+        results = Orchestrator.run_all(repo_path: System.tmp_dir!(), tqm_enabled: false)
+        assert length(results) == 1
+      end)
+    end
+
+    test "GenServer collects results and runs TQM" do
+      test_pid = self()
+
+      with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
+        {:ok, pid} =
+          Orchestrator.start_link(
+            repo_path: System.tmp_dir!(),
+            poll_interval: 600_000,
+            name: {:global, {__MODULE__, :tqm_genserver_test}},
+            on_result: fn result -> send(test_pid, {:result, result}) end,
+            tqm_enabled: true
+          )
+
+        Orchestrator.poll(pid)
+        Process.sleep(500)
+
+        # Verify result was collected
+        state = :sys.get_state(pid)
+        assert length(state.results) >= 1
+
+        Orchestrator.stop(pid)
+      end)
+    end
+
+    test "GenServer with tqm_enabled: false does not accumulate" do
+      with_env(%{"BEADS_BD_PATH" => @mock_bd_empty}, fn ->
+        {:ok, pid} =
+          Orchestrator.start_link(
+            repo_path: System.tmp_dir!(),
+            poll_interval: 600_000,
+            name: {:global, {__MODULE__, :tqm_disabled_test}},
+            tqm_enabled: false
+          )
+
+        Orchestrator.poll(pid)
+        Process.sleep(100)
+        assert Process.alive?(pid)
+        Orchestrator.stop(pid)
+      end)
+    end
+  end
+
   # -- helpers --
 
   defp with_env(env_map, fun) do

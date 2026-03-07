@@ -25,6 +25,7 @@ defmodule Keiro.Orchestrator do
   alias Keiro.Governance.InputValidator
   alias Keiro.Pipeline
   alias Keiro.Pipeline.Stage
+  alias Keiro.TQM
 
   require Logger
 
@@ -39,6 +40,7 @@ defmodule Keiro.Orchestrator do
   - `:timeout` — per-agent timeout in ms (default: 120_000)
   - `:on_result` — callback fn receiving `%{bead_id, title, result}` (optional)
   - `:approve_fn` — approval callback for governance (optional)
+  - `:tqm_enabled` — run TQM analysis after dispatch (default: true)
   """
   def start_link(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
@@ -61,6 +63,7 @@ defmodule Keiro.Orchestrator do
     timeout = Keyword.get(opts, :timeout, 120_000)
     on_result = Keyword.get(opts, :on_result)
     approve_fn = Keyword.get(opts, :approve_fn)
+    tqm_enabled = Keyword.get(opts, :tqm_enabled, true)
 
     state = %{
       repo_path: repo_path,
@@ -68,6 +71,8 @@ defmodule Keiro.Orchestrator do
       timeout: timeout,
       on_result: on_result,
       approve_fn: approve_fn,
+      tqm_enabled: tqm_enabled,
+      results: [],
       running: false
     }
 
@@ -105,7 +110,12 @@ defmodule Keiro.Orchestrator do
     case run_next(opts) do
       {:ok, _result} = result ->
         if state.on_result, do: state.on_result.(result)
-        %{state | running: false}
+        entry = %{status: :ok, bead_id: nil}
+
+        state
+        |> Map.update!(:results, &[entry | &1])
+        |> maybe_run_tqm()
+        |> Map.put(:running, false)
 
       :no_work ->
         Logger.debug("Orchestrator: no ready beads")
@@ -113,7 +123,12 @@ defmodule Keiro.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Orchestrator poll error: #{inspect(reason)}")
-        %{state | running: false}
+        entry = %{status: :error, error: inspect(reason), bead_id: nil}
+
+        state
+        |> Map.update!(:results, &[entry | &1])
+        |> maybe_run_tqm()
+        |> Map.put(:running, false)
     end
   end
 
@@ -146,20 +161,31 @@ defmodule Keiro.Orchestrator do
 
   @doc """
   Process all ready beads sequentially.
+
+  Runs TQM analysis after all beads are processed (unless `:tqm_enabled` is false).
   """
   @spec run_all(keyword()) :: [map()]
   def run_all(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
+    tqm_enabled = Keyword.get(opts, :tqm_enabled, true)
     client = BeadsClient.new(repo_path)
 
     case BeadsClient.ready(client) do
       {:ok, beads} ->
-        Enum.map(beads, fn bead ->
-          Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
-          BeadsClient.update_status(client, bead.id, "in_progress")
-          result = dispatch(bead, Keyword.get(opts, :timeout, 60_000), opts)
-          %{bead_id: bead.id, title: bead.title, result: result}
-        end)
+        results =
+          Enum.map(beads, fn bead ->
+            Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
+            BeadsClient.update_status(client, bead.id, "in_progress")
+            result = dispatch(bead, Keyword.get(opts, :timeout, 60_000), opts)
+            %{bead_id: bead.id, title: bead.title, result: result}
+          end)
+
+        if tqm_enabled and results != [] do
+          tqm_results = Enum.map(results, &to_tqm_entry/1)
+          run_tqm_analysis(tqm_results, repo_path)
+        end
+
+        results
 
       {:error, reason} ->
         Logger.error("Orchestrator: failed to fetch beads: #{reason}")
@@ -320,6 +346,52 @@ defmodule Keiro.Orchestrator do
     The engineer has completed implementation. Deploy and verify.#{eng_result}
     """
   end
+
+  # -- TQM integration --
+
+  defp maybe_run_tqm(%{tqm_enabled: false} = state), do: state
+
+  defp maybe_run_tqm(%{tqm_enabled: true, results: results, repo_path: repo_path} = state) do
+    run_tqm_analysis(results, repo_path)
+    state
+  end
+
+  defp run_tqm_analysis(results, repo_path) do
+    patterns = TQM.Analyzer.analyze(results)
+
+    if patterns != [] do
+      Logger.info("TQM: detected #{length(patterns)} pattern(s)")
+      client = BeadsClient.new(repo_path)
+
+      Enum.each(patterns, fn pattern ->
+        title = "TQM: #{pattern.name} (#{pattern.severity})"
+        description = "#{pattern.description}\n\nRemediation: #{pattern.remediation}"
+
+        BeadsClient.create(client, title,
+          type: "task",
+          priority: tqm_severity_to_priority(pattern.severity),
+          labels: ["eng", "tqm"],
+          description: description
+        )
+      end)
+    end
+
+    patterns
+  end
+
+  defp tqm_severity_to_priority(:critical), do: 0
+  defp tqm_severity_to_priority(:warning), do: 2
+  defp tqm_severity_to_priority(:info), do: 3
+  defp tqm_severity_to_priority(_), do: 2
+
+  defp to_tqm_entry(%{bead_id: bead_id, result: {:ok, _}}),
+    do: %{bead_id: bead_id, status: :ok}
+
+  defp to_tqm_entry(%{bead_id: bead_id, result: {:error, reason}}),
+    do: %{bead_id: bead_id, status: :error, error: inspect(reason)}
+
+  defp to_tqm_entry(%{bead_id: bead_id}),
+    do: %{bead_id: bead_id, status: :error, error: "unknown"}
 
   defp maybe_add(opts, _key, nil), do: opts
   defp maybe_add(opts, key, value), do: Keyword.put(opts, key, value)
