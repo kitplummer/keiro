@@ -196,7 +196,7 @@ defmodule Keiro.Orchestrator do
   @doc """
   Route a bead to the appropriate agent or pipeline based on labels.
 
-  - "eng" beads route to the engineer pipeline (engineer → deploy)
+  - "eng" beads route to the engineer pipeline (on success, creates an ops deploy bead)
   - "ops" beads route directly to UplinkAgent
   - "arch" beads route directly to ArchitectAgent
   """
@@ -292,21 +292,12 @@ defmodule Keiro.Orchestrator do
         timeout: timeout
       }
 
-      deploy_stage = %Stage{
-        name: "deploy",
-        agent_module: Keiro.Ops.UplinkAgent,
-        prompt_fn: &deploy_prompt/2,
-        timeout: timeout
-      }
-
-      labels = bead.labels || []
-      stages = if "ops" in labels, do: [eng_stage, deploy_stage], else: [eng_stage]
-
-      case Pipeline.run(bead, stages, tool_context: tool_context) do
+      case Pipeline.run(bead, [eng_stage], tool_context: tool_context) do
         {:ok, result} ->
           Logger.info("Pipeline completed for bead #{bead.id}")
           result = attach_outcome_context(result, client, bead.id)
           if client, do: BeadsClient.close(client, bead.id)
+          if client, do: create_deploy_bead(client, bead, result)
           {:ok, result}
 
         {:error, result} ->
@@ -347,19 +338,36 @@ defmodule Keiro.Orchestrator do
     """
   end
 
-  defp deploy_prompt(bead, prev_stages) do
-    eng_result =
-      case prev_stages do
-        [%{result: result} | _] -> "\n\nEngineer stage result: #{inspect(result)}"
-        _ -> ""
-      end
+  defp create_deploy_bead(client, eng_bead, eng_result) do
+    title = "Deploy: #{eng_bead.title}" |> String.slice(0, 200)
 
-    """
-    #{build_bead_prompt(bead)}
+    description = """
+    Engineer pipeline completed for #{eng_bead.id}.
+    Deploy the changes to fly.io and verify with smoke tests.
 
-    The engineer has completed implementation. Deploy and verify.#{eng_result}
+    Engineer result: #{summarize_eng_result(eng_result)}
     """
+
+    case BeadsClient.create(client, title,
+           type: "task",
+           priority: eng_bead.priority || 2,
+           labels: ["ops"],
+           description: description
+         ) do
+      {:ok, deploy_id} ->
+        BeadsClient.link(client, deploy_id, eng_bead.id)
+        Logger.info("Created deploy bead #{deploy_id} linked to #{eng_bead.id}")
+        {:ok, deploy_id}
+
+      {:error, reason} ->
+        Logger.warning("Failed to create deploy bead: #{reason}")
+        {:error, reason}
+    end
   end
+
+  defp summarize_eng_result(%{outcome: outcome}) when is_binary(outcome), do: outcome
+  defp summarize_eng_result(%{status: status}), do: to_string(status)
+  defp summarize_eng_result(result), do: inspect(result, limit: 200)
 
   # -- TQM integration --
 

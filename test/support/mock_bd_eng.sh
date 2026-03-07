@@ -25,6 +25,9 @@ EOF
   create)
     echo "gl-200"
     ;;
+  link)
+    echo "Linked $2 -> $3"
+    ;;
   comments)
     echo "Comment added"
     ;;

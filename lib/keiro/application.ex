@@ -7,13 +7,23 @@ defmodule Keiro.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      Keiro.Jido
-    ]
+    children = [Keiro.Jido] ++ orchestrator_child()
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Keiro.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp orchestrator_child do
+    case Application.get_env(:keiro, :orchestrator) do
+      config when is_list(config) ->
+        if Keyword.get(config, :repo_path) do
+          [{Keiro.Orchestrator, config}]
+        else
+          []
+        end
+
+      _ ->
+        []
+    end
   end
 end
