@@ -69,6 +69,35 @@ defmodule Keiro.WorkspaceTest do
       provider = Workspace.GitWorktree.new("/nonexistent/repo")
       assert {:error, _} = Workspace.acquire(provider)
     end
+
+    test "acquire and release with real git repo" do
+      tmp = Path.join(System.tmp_dir!(), "keiro-wt-test-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      # Initialize a git repo with an initial commit
+      {_, 0} = System.cmd("git", ["init", tmp])
+      File.write!(Path.join(tmp, "README.md"), "test")
+      {_, 0} = System.cmd("git", ["add", "."], cd: tmp)
+
+      {_, 0} =
+        System.cmd(
+          "git",
+          ["-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "init"],
+          cd: tmp
+        )
+
+      provider = Workspace.GitWorktree.new(tmp)
+      assert {:ok, ws} = Workspace.acquire(provider)
+      assert File.dir?(ws.path)
+      assert ws.metadata.provider == :git_worktree
+      assert is_binary(ws.metadata.branch)
+
+      assert :ok = Workspace.release(provider, ws)
+      refute File.dir?(ws.path)
+    after
+      tmp = Path.join(System.tmp_dir!(), "keiro-wt-test-*")
+      for dir <- Path.wildcard(tmp), do: File.rm_rf!(dir)
+    end
   end
 
   describe "dispatch" do

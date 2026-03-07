@@ -1,0 +1,15 @@
+{
+  "coverage_options": {
+    "minimum_coverage": 90,
+    "treat_no_relevant_lines_as_covered": true
+  },
+  "skip_files": [
+    "lib/mix/tasks/",
+    "lib/keiro/eng/engineer_agent.ex",
+    "lib/keiro/arch/architect_agent.ex",
+    "lib/keiro/ops/uplink_agent.ex",
+    "lib/keiro/beads/actions/",
+    "lib/keiro/jido.ex",
+    "lib/keiro/governance/approval.ex"
+  ]
+}
