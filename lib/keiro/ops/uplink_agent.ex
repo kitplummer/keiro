@@ -22,6 +22,7 @@ defmodule Keiro.Ops.UplinkAgent do
       Keiro.Ops.Actions.FlyStatus,
       Keiro.Ops.Actions.FlyLogs,
       Keiro.Ops.Actions.FlySSH,
+      Keiro.Ops.Actions.FlyDeploy,
       Keiro.Ops.Actions.FlySmokeTest,
       Keiro.Ops.Actions.FileEdit,
       Keiro.Beads.Actions.Create,

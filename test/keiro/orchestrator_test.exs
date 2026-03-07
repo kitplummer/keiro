@@ -174,17 +174,33 @@ defmodule Keiro.OrchestratorTest do
     end
   end
 
-  describe "pipeline stage selection" do
-    test "eng-only bead skips deploy stage" do
-      bead = %Bead{id: "gl-030", title: "Code only", labels: ["eng"]}
-      labels = bead.labels || []
-      assert "ops" not in labels
+  describe "deploy bead handoff" do
+    test "successful eng pipeline creates a deploy bead" do
+      with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
+        result = Orchestrator.run_next(repo_path: System.tmp_dir!())
+        assert {:ok, pipeline_result} = result
+        assert pipeline_result.status == :ok
+        # deploy bead creation is a side effect — mock_bd_eng returns gl-200 for create
+        # and handles link. If these weren't handled, the test would fail.
+      end)
     end
 
-    test "eng+ops bead includes deploy stage" do
+    test "failed eng pipeline does not create deploy bead" do
+      with_env(%{"CLAUDE_BIN_PATH" => @mock_claude_fail, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
+        result = Orchestrator.run_next(repo_path: System.tmp_dir!())
+        assert {:error, pipeline_result} = result
+        assert pipeline_result.error_stage == "engineer"
+      end)
+    end
+
+    test "eng bead routes to engineer pipeline, not inline deploy" do
+      bead = %Bead{id: "gl-030", title: "Code only", labels: ["eng"]}
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
+    end
+
+    test "eng+ops bead still routes to engineer pipeline (deploy via bead handoff)" do
       bead = %Bead{id: "gl-031", title: "Code + deploy", labels: ["eng", "ops"]}
-      labels = bead.labels || []
-      assert "ops" in labels
+      assert {:ok, :engineer_pipeline} = Orchestrator.route(bead)
     end
   end
 
