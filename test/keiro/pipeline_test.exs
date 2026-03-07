@@ -52,6 +52,12 @@ defmodule Keiro.PipelineTest do
       assert result.stages == []
       assert result.error_stage == nil
     end
+
+    test "has outcome and outcome_context fields" do
+      result = %Result{}
+      assert result.outcome == nil
+      assert result.outcome_context == nil
+    end
   end
 
   describe "StageResult struct" do

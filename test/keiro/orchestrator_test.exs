@@ -4,7 +4,6 @@ defmodule Keiro.OrchestratorTest do
   alias Keiro.Orchestrator
   alias Keiro.Beads.Bead
 
-  @mock_bd Path.expand("../support/mock_bd.sh", __DIR__)
   @mock_bd_eng Path.expand("../support/mock_bd_eng.sh", __DIR__)
   @mock_bd_docs Path.expand("../support/mock_bd_docs.sh", __DIR__)
   @mock_bd_empty Path.expand("../support/mock_bd_empty.sh", __DIR__)

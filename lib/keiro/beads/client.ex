@@ -108,6 +108,14 @@ defmodule Keiro.Beads.Client do
     end
   end
 
+  @doc "Add a comment to a bead."
+  @spec comment(t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def comment(%__MODULE__{} = client, id, body) do
+    Keiro.Telemetry.span([:keiro, :beads, :comment], %{bead_id: id}, fn ->
+      run_bd(client, ["comments", "add", id, body])
+    end)
+  end
+
   @doc "Link two beads (from depends on to)."
   @spec link(t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def link(%__MODULE__{} = client, from, to) do
