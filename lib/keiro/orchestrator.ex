@@ -24,7 +24,7 @@ defmodule Keiro.Orchestrator do
   alias Keiro.Beads.Client, as: BeadsClient
   alias Keiro.Governance.InputValidator
   alias Keiro.Pipeline
-  alias Keiro.Pipeline.Stage
+  alias Keiro.Pipeline.{OutcomeContext, Stage}
   alias Keiro.TQM
 
   require Logger
@@ -305,15 +305,29 @@ defmodule Keiro.Orchestrator do
       case Pipeline.run(bead, stages, tool_context: tool_context) do
         {:ok, result} ->
           Logger.info("Pipeline completed for bead #{bead.id}")
+          result = attach_outcome_context(result, client, bead.id)
           if client, do: BeadsClient.close(client, bead.id)
           {:ok, result}
 
         {:error, result} ->
           Logger.warning("Pipeline failed at stage #{result.error_stage} for bead #{bead.id}")
+          result = attach_outcome_context(result, client, bead.id)
           if client, do: BeadsClient.update_status(client, bead.id, "blocked")
           {:error, result}
       end
     end)
+  end
+
+  defp attach_outcome_context(result, client, bead_id) do
+    ctx = OutcomeContext.from_result(result)
+    result = %{result | outcome: ctx.outcome, outcome_context: ctx}
+
+    if client do
+      markdown = OutcomeContext.to_markdown(ctx)
+      BeadsClient.comment(client, bead_id, markdown)
+    end
+
+    result
   end
 
   defp claude_engineer_runner(prompt, tool_context) do

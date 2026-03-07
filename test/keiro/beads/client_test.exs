@@ -100,6 +100,12 @@ defmodule Keiro.Beads.ClientTest do
     end
   end
 
+  describe "comment/3" do
+    test "adds a comment to a bead" do
+      assert {:ok, "Comment added"} = Client.comment(client(), "gl-001", "## Outcome: completed")
+    end
+  end
+
   describe "link/3" do
     test "links two beads" do
       assert {:ok, "Linked gl-002 -> gl-001"} = Client.link(client(), "gl-002", "gl-001")

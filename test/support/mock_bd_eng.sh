@@ -25,6 +25,9 @@ EOF
   create)
     echo "gl-200"
     ;;
+  comments)
+    echo "Comment added"
+    ;;
   *)
     echo "Unknown command: $1" >&2
     exit 1

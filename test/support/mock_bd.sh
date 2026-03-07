@@ -29,6 +29,9 @@ EOF
   link)
     echo "Linked $2 -> $3"
     ;;
+  comments)
+    echo "Comment added"
+    ;;
   *)
     echo "Unknown command: $1" >&2
     exit 1
