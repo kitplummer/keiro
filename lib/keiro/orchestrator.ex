@@ -22,6 +22,7 @@ defmodule Keiro.Orchestrator do
   use GenServer
 
   alias Keiro.Beads.Client, as: BeadsClient
+  alias Keiro.Governance.InputValidator
   alias Keiro.Pipeline
   alias Keiro.Pipeline.Stage
 
@@ -192,6 +193,20 @@ defmodule Keiro.Orchestrator do
     repo_path = Keyword.get(opts, :repo_path)
     tool_context = build_tool_context(opts)
 
+    case InputValidator.validate_bead(bead) do
+      {:ok, _validated} ->
+        dispatch_validated(bead, timeout, repo_path, tool_context)
+
+      {:error, reason} ->
+        Logger.warning(
+          "Orchestrator: input validation failed for bead #{bead.id}: #{inspect(reason)}"
+        )
+
+        {:error, "input validation failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp dispatch_validated(bead, timeout, repo_path, tool_context) do
     case route(bead) do
       {:ok, :engineer_pipeline} ->
         dispatch_pipeline(bead, timeout, repo_path, tool_context)
@@ -212,7 +227,8 @@ defmodule Keiro.Orchestrator do
     metadata = %{bead_id: bead.id, agent: agent_module, kind: :agent}
 
     Keiro.Telemetry.span([:keiro, :orchestrator, :dispatch], metadata, fn ->
-      prompt = "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
+      # Bead already validated in dispatch/3; build prompt from validated content
+      prompt = build_bead_prompt(bead)
 
       try do
         case Jido.AgentServer.start(agent: agent_module, jido: Keiro.Jido) do
@@ -279,11 +295,13 @@ defmodule Keiro.Orchestrator do
     Keiro.Eng.ClaudeCli.run(prompt, repo_path, timeout: 300_000)
   end
 
+  defp build_bead_prompt(bead) do
+    "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
+  end
+
   defp eng_prompt(bead, _prev_stages) do
     """
-    Bead #{bead.id}: #{bead.title}
-
-    #{bead.description || "No description."}
+    #{build_bead_prompt(bead)}
 
     Implement this task: create a branch, write the code, run tests, and open a PR.
     """
@@ -297,7 +315,7 @@ defmodule Keiro.Orchestrator do
       end
 
     """
-    Bead #{bead.id}: #{bead.title}
+    #{build_bead_prompt(bead)}
 
     The engineer has completed implementation. Deploy and verify.#{eng_result}
     """
