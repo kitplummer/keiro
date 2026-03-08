@@ -15,3 +15,7 @@ config :keiro, :lei,
   fly_app: System.get_env("LEI_FLY_APP") || "lowendinsight"
 
 import_config "#{config_env()}.exs"
+
+if File.exists?(Path.expand("secrets.exs", __DIR__)) do
+  import_config "secrets.exs"
+end

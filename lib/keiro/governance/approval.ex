@@ -52,11 +52,11 @@ defmodule Keiro.Governance.Approval do
     IO.puts("Action: #{description}")
 
     case IO.gets("Approve? [y/N] ") do
-      nil ->
+      result when result in [nil, :eof] ->
         IO.puts("No interactive terminal — rejecting")
         :rejected
 
-      response ->
+      response when is_binary(response) ->
         normalized = response |> String.trim() |> String.downcase()
 
         if normalized in ["y", "yes"] do

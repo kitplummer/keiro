@@ -6,6 +6,7 @@ config :jido_ai,
     capable: "anthropic:claude-sonnet-4-20250514"
   }
 
+# Env var overrides config/secrets.exs if set
 if api_key = System.get_env("ANTHROPIC_API_KEY") do
   config :req_llm, :anthropic, api_key: api_key
 end

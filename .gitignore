@@ -22,3 +22,6 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 keiro-*.tar
 
+# Local secrets (API keys, etc.)
+config/secrets.exs
+
