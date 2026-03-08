@@ -340,10 +340,20 @@ defmodule Keiro.Orchestrator do
 
   defp create_deploy_bead(client, eng_bead, eng_result) do
     title = "Deploy: #{eng_bead.title}" |> String.slice(0, 200)
+    lei_config = Application.get_env(:keiro, :lei, [])
+    smoke_url = Keyword.get(lei_config, :smoke_test_url, "https://lowendinsight.fly.dev")
+    fly_app = Keyword.get(lei_config, :fly_app, "lowendinsight")
 
     description = """
     Engineer pipeline completed for #{eng_bead.id}.
     Deploy the changes to fly.io and verify with smoke tests.
+
+    Fly app: #{fly_app}
+    Smoke test URL: #{smoke_url}
+    Smoke test script: scripts/smoke-test.sh
+
+    After deploying, run fly_smoke_test with script: "scripts/smoke-test.sh"
+    and url: "#{smoke_url}" for comprehensive post-deploy verification.
 
     Engineer result: #{summarize_eng_result(eng_result)}
     """

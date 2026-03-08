@@ -9,10 +9,28 @@ defmodule Keiro.Ops.Actions.FlySmokeTest do
     vsn: "1.0.0",
     schema: [
       url: [type: :string, required: true, doc: "URL to test"],
-      expected_status: [type: :integer, default: 200, doc: "Expected HTTP status code"]
+      expected_status: [type: :integer, default: 200, doc: "Expected HTTP status code"],
+      script: [type: :string, doc: "Path to smoke test script (overrides simple GET)"],
+      repo_path: [type: :string, doc: "Repo path for script resolution"]
     ]
 
   @impl Jido.Action
+  def run(%{script: script} = params, _context) when is_binary(script) do
+    script_path = resolve_script(script, params[:repo_path])
+
+    if File.exists?(script_path) do
+      case System.cmd("bash", [script_path, params.url], stderr_to_stdout: true) do
+        {output, 0} ->
+          {:ok, %{healthy: true, output: truncate_body(output)}}
+
+        {output, code} ->
+          {:ok, %{healthy: false, exit_code: code, output: truncate_body(output)}}
+      end
+    else
+      {:ok, %{healthy: false, error: "script not found: #{script_path}"}}
+    end
+  end
+
   def run(params, _context) do
     expected = Map.get(params, :expected_status, 200)
 
@@ -29,6 +47,9 @@ defmodule Keiro.Ops.Actions.FlySmokeTest do
         {:ok, %{healthy: false, status_code: nil, error: inspect(reason)}}
     end
   end
+
+  defp resolve_script(script, nil), do: script
+  defp resolve_script(script, repo_path), do: Path.join(repo_path, script)
 
   defp truncate_body(body) when is_binary(body), do: String.slice(body, 0, 2000)
   defp truncate_body(body), do: inspect(body) |> String.slice(0, 2000)

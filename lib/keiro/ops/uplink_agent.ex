@@ -38,6 +38,12 @@ defmodule Keiro.Ops.UplinkAgent do
     4. After deployment, run smoke tests to verify health
     5. Record all findings and actions as beads for audit trail
 
+    Post-deploy verification:
+    - Use `fly_smoke_test` with `script: "scripts/smoke-test.sh"` for comprehensive
+      post-deploy verification. This runs auth, public endpoint, and API coverage tests.
+    - The script accepts the base URL as its first argument.
+    - A simple GET smoke test (no script param) is fine for quick liveness checks.
+
     SRE scope only — you may edit infrastructure files (Dockerfile, fly.toml,
     env.sh.eex, application.ex, config/runtime.exs) but NOT application business logic.
 
