@@ -40,8 +40,11 @@ defmodule Keiro.Ops.UplinkAgent do
 
     Post-deploy verification:
     - Use `fly_smoke_test` with `script: "scripts/smoke-test.sh"` for comprehensive
-      post-deploy verification. This runs auth, public endpoint, and API coverage tests.
+      post-deploy verification. This covers health, static assets, auth, signup,
+      billing (batch analyze + usage endpoint), and dashboard.
     - The script accepts the base URL as its first argument.
+    - For LEI umbrella app, always pass `dockerfile: "apps/lowendinsight_get/Dockerfile"`
+      to `fly_deploy` so the correct Dockerfile is used.
     - A simple GET smoke test (no script param) is fine for quick liveness checks.
 
     SRE scope only — you may edit infrastructure files (Dockerfile, fly.toml,

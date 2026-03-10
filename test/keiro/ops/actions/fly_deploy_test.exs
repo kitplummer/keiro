@@ -25,6 +25,17 @@ defmodule Keiro.Ops.Actions.FlyDeployTest do
     assert is_binary(result.error)
   end
 
+  test "deploys with dockerfile option", %{approve: ctx} do
+    assert {:ok, result} =
+             FlyDeploy.run(
+               %{app: "lowendinsight", repo_path: "/tmp", dockerfile: "apps/lei/Dockerfile"},
+               ctx
+             )
+
+    assert result.success == true
+    assert result.output =~ "Deploying"
+  end
+
   test "rejects when governance gate rejects" do
     reject = %{approve_fn: fn _desc -> :rejected end}
 

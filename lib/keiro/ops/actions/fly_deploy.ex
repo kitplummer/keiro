@@ -10,7 +10,8 @@ defmodule Keiro.Ops.Actions.FlyDeploy do
     schema: [
       app: [type: :string, required: true, doc: "Fly.io app name"],
       repo_path: [type: :string, required: true, doc: "Path to the repo to deploy from"],
-      no_cache: [type: :boolean, default: false, doc: "Disable Docker build cache"]
+      no_cache: [type: :boolean, default: false, doc: "Disable Docker build cache"],
+      dockerfile: [type: :string, doc: "Path to Dockerfile (relative to repo_path)"]
     ]
 
   alias Keiro.Ops.FlyCli
@@ -26,7 +27,8 @@ defmodule Keiro.Ops.Actions.FlyDeploy do
 
       args =
         ["deploy", "--app", params.app] ++
-          if(Map.get(params, :no_cache, false), do: ["--no-cache"], else: [])
+          if(Map.get(params, :no_cache, false), do: ["--no-cache"], else: []) ++
+          if(Map.get(params, :dockerfile), do: ["--dockerfile", params.dockerfile], else: [])
 
       case FlyCli.run(fly, args, cd: repo_path) do
         {:ok, output} ->

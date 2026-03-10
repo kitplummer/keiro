@@ -12,7 +12,9 @@ config :keiro, :orchestrator,
 
 config :keiro, :lei,
   smoke_test_url: System.get_env("LEI_SMOKE_TEST_URL") || "https://lowendinsight.fly.dev",
-  fly_app: System.get_env("LEI_FLY_APP") || "lowendinsight"
+  fly_app: System.get_env("LEI_FLY_APP") || "lowendinsight",
+  dockerfile: System.get_env("LEI_DOCKERFILE") || "apps/lowendinsight_get/Dockerfile",
+  smoke_test_script: System.get_env("LEI_SMOKE_TEST_SCRIPT") || "scripts/smoke-test.sh"
 
 import_config "#{config_env()}.exs"
 

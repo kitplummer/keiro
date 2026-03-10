@@ -251,31 +251,109 @@ defmodule Keiro.Orchestrator do
 
   defp dispatch_agent(bead, agent_module, timeout, tool_context) do
     metadata = %{bead_id: bead.id, agent: agent_module, kind: :agent}
+    repo_path = Map.get(tool_context, :repo_path)
 
     Keiro.Telemetry.span([:keiro, :orchestrator, :dispatch], metadata, fn ->
       # Bead already validated in dispatch/3; build prompt from validated content
       prompt = build_bead_prompt(bead)
 
-      try do
-        case Jido.AgentServer.start(agent: agent_module, jido: Keiro.Jido) do
-          {:ok, pid} ->
-            result =
-              agent_module.ask_sync(pid, prompt,
-                timeout: timeout,
-                tool_context: tool_context
-              )
+      result =
+        try do
+          case Jido.AgentServer.start(agent: agent_module, jido: Keiro.Jido) do
+            {:ok, pid} ->
+              result =
+                agent_module.ask_sync(pid, prompt,
+                  timeout: timeout,
+                  tool_context: tool_context
+                )
 
-            GenServer.stop(pid, :normal)
-            result
+              GenServer.stop(pid, :normal)
+              result
 
-          {:error, reason} ->
+            {:error, reason} ->
+              {:error, "Failed to start agent: #{inspect(reason)}"}
+          end
+        catch
+          :exit, reason ->
             {:error, "Failed to start agent: #{inspect(reason)}"}
         end
-      catch
-        :exit, reason ->
-          {:error, "Failed to start agent: #{inspect(reason)}"}
+
+      # Post-dispatch: persist results and handle failures
+      if repo_path do
+        client = BeadsClient.new(repo_path)
+        record_agent_outcome(client, bead, agent_module, result)
       end
+
+      result
     end)
+  end
+
+  @doc false
+  def record_agent_outcome(client, bead, agent_module, result) do
+    agent_name = agent_module |> Module.split() |> List.last()
+
+    case result do
+      {:ok, output} ->
+        comment = format_agent_result_comment(agent_name, :ok, output)
+        BeadsClient.comment(client, bead.id, comment)
+        BeadsClient.close(client, bead.id)
+
+      {:error, reason} ->
+        comment = format_agent_result_comment(agent_name, :error, reason)
+        BeadsClient.comment(client, bead.id, comment)
+        BeadsClient.update_status(client, bead.id, "blocked")
+        create_investigation_bead(client, bead, agent_name, reason)
+    end
+  end
+
+  defp format_agent_result_comment(agent_name, :ok, output) do
+    output_str = inspect(output, limit: 500, printable_limit: 1000)
+
+    """
+    ## #{agent_name} — Completed
+
+    **Status:** success
+    **Output:** #{String.slice(output_str, 0, 1500)}
+    """
+  end
+
+  defp format_agent_result_comment(agent_name, :error, reason) do
+    """
+    ## #{agent_name} — Failed
+
+    **Status:** error
+    **Reason:** #{inspect(reason, limit: 500, printable_limit: 1000)}
+    """
+  end
+
+  @doc false
+  def create_investigation_bead(client, failed_bead, agent_name, reason) do
+    title = "Investigate: #{agent_name} failure on #{failed_bead.id}" |> String.slice(0, 200)
+
+    description = """
+    #{agent_name} failed while processing bead #{failed_bead.id}: #{failed_bead.title}
+
+    Error: #{inspect(reason, limit: 500, printable_limit: 1000)}
+
+    Original bead description:
+    #{failed_bead.description || "No description."}
+
+    Investigate the root cause and either fix the issue or escalate.
+    """
+
+    case BeadsClient.create(client, title,
+           type: "task",
+           priority: min((failed_bead.priority || 2) + 0, 4),
+           labels: ["ops"],
+           description: description
+         ) do
+      {:ok, inv_id} ->
+        BeadsClient.link(client, inv_id, failed_bead.id)
+        Logger.info("Created investigation bead #{inv_id} for failed #{failed_bead.id}")
+
+      {:error, reason} ->
+        Logger.warning("Failed to create investigation bead: #{reason}")
+    end
   end
 
   defp dispatch_pipeline(bead, timeout, repo_path, tool_context) do
@@ -343,17 +421,22 @@ defmodule Keiro.Orchestrator do
     lei_config = Application.get_env(:keiro, :lei, [])
     smoke_url = Keyword.get(lei_config, :smoke_test_url, "https://lowendinsight.fly.dev")
     fly_app = Keyword.get(lei_config, :fly_app, "lowendinsight")
+    dockerfile = Keyword.get(lei_config, :dockerfile, "apps/lowendinsight_get/Dockerfile")
+    smoke_script = Keyword.get(lei_config, :smoke_test_script, "scripts/smoke-test.sh")
 
     description = """
     Engineer pipeline completed for #{eng_bead.id}.
     Deploy the changes to fly.io and verify with smoke tests.
 
     Fly app: #{fly_app}
+    Dockerfile: #{dockerfile}
     Smoke test URL: #{smoke_url}
-    Smoke test script: scripts/smoke-test.sh
+    Smoke test script: #{smoke_script}
 
-    After deploying, run fly_smoke_test with script: "scripts/smoke-test.sh"
-    and url: "#{smoke_url}" for comprehensive post-deploy verification.
+    Steps:
+    1. Deploy with fly_deploy using app: "#{fly_app}", dockerfile: "#{dockerfile}"
+    2. Run fly_smoke_test with script: "#{smoke_script}" and url: "#{smoke_url}"
+    3. If smoke tests fail, create an investigation bead with failure details
 
     Engineer result: #{summarize_eng_result(eng_result)}
     """
