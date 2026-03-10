@@ -22,7 +22,7 @@ defmodule Keiro.Orchestrator do
   use GenServer
 
   alias Keiro.Beads.Client, as: BeadsClient
-  alias Keiro.Governance.InputValidator
+  alias Keiro.Governance.{InputValidator, PromptAssembler}
   alias Keiro.Pipeline
   alias Keiro.Pipeline.{OutcomeContext, Stage}
   alias Keiro.TQM
@@ -220,8 +220,8 @@ defmodule Keiro.Orchestrator do
     tool_context = build_tool_context(opts)
 
     case InputValidator.validate_bead(bead) do
-      {:ok, _validated} ->
-        dispatch_validated(bead, timeout, repo_path, tool_context)
+      {:ok, validated} ->
+        dispatch_validated(bead, validated, timeout, repo_path, tool_context)
 
       {:error, reason} ->
         Logger.warning(
@@ -232,13 +232,13 @@ defmodule Keiro.Orchestrator do
     end
   end
 
-  defp dispatch_validated(bead, timeout, repo_path, tool_context) do
+  defp dispatch_validated(bead, validated, timeout, repo_path, tool_context) do
     case route(bead) do
       {:ok, :engineer_pipeline} ->
-        dispatch_pipeline(bead, timeout, repo_path, tool_context)
+        dispatch_pipeline(bead, validated, timeout, repo_path, tool_context)
 
       {:ok, agent_module} ->
-        dispatch_agent(bead, agent_module, timeout, tool_context)
+        dispatch_agent(bead, validated, agent_module, timeout, tool_context)
 
       {:error, :no_matching_agent} ->
         Logger.warning(
@@ -249,13 +249,12 @@ defmodule Keiro.Orchestrator do
     end
   end
 
-  defp dispatch_agent(bead, agent_module, timeout, tool_context) do
+  defp dispatch_agent(bead, validated, agent_module, timeout, tool_context) do
     metadata = %{bead_id: bead.id, agent: agent_module, kind: :agent}
     repo_path = Map.get(tool_context, :repo_path)
 
     Keiro.Telemetry.span([:keiro, :orchestrator, :dispatch], metadata, fn ->
-      # Bead already validated in dispatch/3; build prompt from validated content
-      prompt = build_bead_prompt(bead)
+      prompt = PromptAssembler.assemble_task_prompt(validated)
 
       result =
         try do
@@ -356,7 +355,7 @@ defmodule Keiro.Orchestrator do
     end
   end
 
-  defp dispatch_pipeline(bead, timeout, repo_path, tool_context) do
+  defp dispatch_pipeline(bead, validated, timeout, repo_path, tool_context) do
     metadata = %{bead_id: bead.id, kind: :pipeline}
 
     Keiro.Telemetry.span([:keiro, :orchestrator, :dispatch], metadata, fn ->
@@ -365,7 +364,7 @@ defmodule Keiro.Orchestrator do
       eng_stage = %Stage{
         name: "engineer",
         agent_module: Keiro.Eng.EngineerAgent,
-        prompt_fn: &eng_prompt/2,
+        prompt_fn: fn bead, prev_stages -> eng_prompt(bead, validated, prev_stages) end,
         runner_fn: &claude_engineer_runner/2,
         timeout: timeout
       }
@@ -404,13 +403,11 @@ defmodule Keiro.Orchestrator do
     Keiro.Eng.ClaudeCli.run(prompt, repo_path, timeout: 300_000)
   end
 
-  defp build_bead_prompt(bead) do
-    "Bead #{bead.id}: #{bead.title}\n\n#{bead.description || "No description."}"
-  end
+  defp eng_prompt(_bead, validated, _prev_stages) do
+    objective = PromptAssembler.assemble_task_prompt(validated)
 
-  defp eng_prompt(bead, _prev_stages) do
     """
-    #{build_bead_prompt(bead)}
+    #{objective}
 
     Implement this task: create a branch, write the code, run tests, and open a PR.
     """
