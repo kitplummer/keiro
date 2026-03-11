@@ -71,7 +71,7 @@ defmodule Keiro.Ops.Actions.FlySmokeTestTest do
     assert result.error =~ "script not found"
   end
 
-  test "script mode: repo_path resolves script relative to repo" do
+  test "script mode: repo_path in params resolves script relative to repo" do
     dir = System.tmp_dir!() |> Path.join("keiro_smoke_test_#{:rand.uniform(100_000)}")
     File.mkdir_p!(dir)
     script_content = "#!/bin/bash\necho \"testing $1\"\nexit 0"
@@ -87,6 +87,24 @@ defmodule Keiro.Ops.Actions.FlySmokeTestTest do
     assert result.output =~ "testing http://example.com"
   after
     # cleanup handled by OS tmp
+    :ok
+  end
+
+  test "script mode: repo_path falls back to context when not in params" do
+    dir = System.tmp_dir!() |> Path.join("keiro_smoke_ctx_#{:rand.uniform(100_000)}")
+    File.mkdir_p!(dir)
+    script_content = "#!/bin/bash\necho \"context path works: $1\"\nexit 0"
+    File.write!(Path.join(dir, "smoke.sh"), script_content)
+
+    assert {:ok, result} =
+             FlySmokeTest.run(
+               %{url: "http://example.com", script: "smoke.sh"},
+               %{repo_path: dir}
+             )
+
+    assert result.healthy == true
+    assert result.output =~ "context path works"
+  after
     :ok
   end
 

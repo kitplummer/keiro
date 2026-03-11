@@ -15,8 +15,9 @@ defmodule Keiro.Ops.Actions.FlySmokeTest do
     ]
 
   @impl Jido.Action
-  def run(%{script: script} = params, _context) when is_binary(script) do
-    script_path = resolve_script(script, params[:repo_path])
+  def run(%{script: script} = params, context) when is_binary(script) do
+    repo_path = params[:repo_path] || Map.get(context, :repo_path)
+    script_path = resolve_script(script, repo_path)
 
     if File.exists?(script_path) do
       case System.cmd("bash", [script_path, params.url], stderr_to_stdout: true) do

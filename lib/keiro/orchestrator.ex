@@ -514,8 +514,12 @@ defmodule Keiro.Orchestrator do
     context =
       if opts[:repo_path], do: Map.put(context, :repo_path, opts[:repo_path]), else: context
 
-    if opts[:approve_fn],
-      do: Map.put(context, :approve_fn, opts[:approve_fn]),
-      else: context
+    approve_fn = opts[:approve_fn] || (&batch_auto_approve/1)
+    Map.put(context, :approve_fn, approve_fn)
+  end
+
+  defp batch_auto_approve(description) do
+    Logger.info("Orchestrator: auto-approving in batch mode: #{description}")
+    :approved
   end
 end
