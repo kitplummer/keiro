@@ -55,5 +55,5 @@ defmodule Keiro.Ops.UplinkAgent do
     """,
     model: :capable,
     max_iterations: 30,
-    tool_timeout_ms: 60_000
+    tool_timeout_ms: 300_000
 end

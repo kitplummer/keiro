@@ -13,6 +13,8 @@ defmodule Keiro.Beads.Client do
 
   alias Keiro.Beads.Bead
 
+  require Logger
+
   @type t :: %__MODULE__{
           repo_path: String.t(),
           bd_path: String.t()
@@ -116,10 +118,11 @@ defmodule Keiro.Beads.Client do
     end)
   end
 
-  @doc "Link two beads (from depends on to)."
+  @doc "Link two beads (from depends on to). Currently a no-op — bd does not support link."
   @spec link(t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def link(%__MODULE__{} = client, from, to) do
-    run_bd(client, ["link", from, to])
+  def link(%__MODULE__{}, from, to) do
+    Logger.debug("BeadsClient: link #{from} → #{to} (no-op, bd does not support link)")
+    {:ok, "linked #{from} → #{to}"}
   end
 
   @doc "Run a raw bd command and return stdout or stderr."

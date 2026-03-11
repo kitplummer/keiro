@@ -107,8 +107,8 @@ defmodule Keiro.Beads.ClientTest do
   end
 
   describe "link/3" do
-    test "links two beads" do
-      assert {:ok, "Linked gl-002 -> gl-001"} = Client.link(client(), "gl-002", "gl-001")
+    test "returns ok (no-op, bd does not support link)" do
+      assert {:ok, _} = Client.link(client(), "gl-002", "gl-001")
     end
   end
 

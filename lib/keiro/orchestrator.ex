@@ -142,7 +142,7 @@ defmodule Keiro.Orchestrator do
   @spec run_next(keyword()) :: {:ok, map()} | {:error, String.t()} | :no_work
   def run_next(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
-    timeout = Keyword.get(opts, :timeout, 60_000)
+    timeout = Keyword.get(opts, :timeout, 600_000)
     client = BeadsClient.new(repo_path)
 
     case BeadsClient.ready(client) do
