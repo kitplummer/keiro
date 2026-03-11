@@ -16,7 +16,7 @@ defmodule Keiro.Ops.Actions.FlySmokeTest do
 
   @impl Jido.Action
   def run(%{script: script} = params, context) when is_binary(script) do
-    repo_path = params[:repo_path] || Map.get(context, :repo_path)
+    repo_path = resolve_repo_path(params[:repo_path], context)
     script_path = resolve_script(script, repo_path)
 
     if File.exists?(script_path) do
@@ -48,6 +48,11 @@ defmodule Keiro.Ops.Actions.FlySmokeTest do
         {:ok, %{healthy: false, status_code: nil, error: inspect(reason)}}
     end
   end
+
+  defp resolve_repo_path(nil, context), do: Map.get(context, :repo_path)
+  defp resolve_repo_path(".", context), do: Map.get(context, :repo_path, ".")
+  defp resolve_repo_path("/" <> _ = path, _context), do: path
+  defp resolve_repo_path(_relative, context), do: Map.get(context, :repo_path, ".")
 
   defp resolve_script(script, nil), do: script
   defp resolve_script(script, repo_path), do: Path.join(repo_path, script)

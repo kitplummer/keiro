@@ -44,8 +44,9 @@ defmodule Keiro.Ops.UplinkAgent do
 
     Post-deploy verification:
     - Use `fly_smoke_test` with `script: "scripts/smoke-test.sh"` for comprehensive
-      post-deploy verification. The smoke test runs LOCALLY against the deployed URL,
-      not inside the container. The script is at repo_path/scripts/smoke-test.sh.
+      post-deploy verification. Do NOT pass `repo_path` to `fly_smoke_test` — it is
+      injected automatically via context. Only pass `url` and `script`.
+    - The smoke test runs LOCALLY against the deployed URL, not inside the container.
     - The script accepts the base URL as its first argument.
     - For LEI umbrella app, always pass `dockerfile: "apps/lowendinsight_get/Dockerfile"`
       and `repo_path: "."` to `fly_deploy`.
