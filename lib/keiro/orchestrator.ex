@@ -41,6 +41,8 @@ defmodule Keiro.Orchestrator do
   - `:on_result` — callback fn receiving `%{bead_id, title, result}` (optional)
   - `:approve_fn` — approval callback for governance (optional)
   - `:tqm_enabled` — run TQM analysis after dispatch (default: true)
+  - `:max_failures` — number of failures to trip the circuit breaker (default: 3)
+  - `:window_minutes` — time window in minutes for failure tracking (default: 5)
   """
   def start_link(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
@@ -56,6 +58,12 @@ defmodule Keiro.Orchestrator do
   @doc "Stop the orchestrator loop."
   def stop(pid), do: GenServer.stop(pid, :normal)
 
+  @doc "Resume polling after the circuit breaker has tripped."
+  def resume(pid), do: GenServer.call(pid, :resume)
+
+  @doc "Check whether the circuit breaker is currently tripped."
+  def tripped?(pid), do: GenServer.call(pid, :tripped?)
+
   @impl GenServer
   def init(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
@@ -64,6 +72,8 @@ defmodule Keiro.Orchestrator do
     on_result = Keyword.get(opts, :on_result)
     approve_fn = Keyword.get(opts, :approve_fn)
     tqm_enabled = Keyword.get(opts, :tqm_enabled, true)
+    max_failures = Keyword.get(opts, :max_failures, 3)
+    window_minutes = Keyword.get(opts, :window_minutes, 5)
 
     state = %{
       repo_path: repo_path,
@@ -73,7 +83,11 @@ defmodule Keiro.Orchestrator do
       approve_fn: approve_fn,
       tqm_enabled: tqm_enabled,
       results: [],
-      running: false
+      running: false,
+      failure_window: [],
+      max_failures: max_failures,
+      window_minutes: window_minutes,
+      tripped: false
     }
 
     schedule_poll(poll_interval)
@@ -96,8 +110,23 @@ defmodule Keiro.Orchestrator do
   def handle_cast(:poll, %{running: true} = state), do: {:noreply, state}
   def handle_cast(:poll, state), do: {:noreply, do_poll(state)}
 
+  @impl GenServer
+  def handle_call(:resume, _from, state) do
+    Logger.info("Orchestrator: circuit breaker reset via resume")
+    {:reply, :ok, %{state | tripped: false, failure_window: []}}
+  end
+
+  def handle_call(:tripped?, _from, state) do
+    {:reply, state.tripped, state}
+  end
+
   defp schedule_poll(interval) do
     Process.send_after(self(), :poll, interval)
+  end
+
+  defp do_poll(%{tripped: true} = state) do
+    Logger.warning("Orchestrator: circuit breaker tripped, skipping dispatch")
+    state
   end
 
   defp do_poll(state) do
@@ -128,7 +157,24 @@ defmodule Keiro.Orchestrator do
         state
         |> Map.update!(:results, &[entry | &1])
         |> maybe_run_tqm()
+        |> record_failure()
         |> Map.put(:running, false)
+    end
+  end
+
+  defp record_failure(state) do
+    now = System.monotonic_time(:millisecond)
+    cutoff = now - state.window_minutes * 60_000
+    pruned = Enum.filter([now | state.failure_window], &(&1 >= cutoff))
+
+    if length(pruned) >= state.max_failures do
+      Logger.warning(
+        "Orchestrator: circuit breaker tripped — #{length(pruned)} failures in #{state.window_minutes} minute(s)"
+      )
+
+      %{state | failure_window: pruned, tripped: true}
+    else
+      %{state | failure_window: pruned}
     end
   end
 

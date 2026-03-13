@@ -23,7 +23,7 @@ defmodule Keiro.MixProject do
   defp deps do
     [
       {:jido, "~> 2.0"},
-      {:jido_ai, "2.0.0-rc.0"},
+      {:jido_ai, github: "kitplummer/jido_ai", branch: "fix/react-stream-consumer-timeout"},
       {:req_llm, "~> 1.6"},
       {:jason, "~> 1.4"},
       {:excoveralls, "~> 0.18", only: :test, runtime: false}

@@ -404,6 +404,109 @@ defmodule Keiro.OrchestratorTest do
     end
   end
 
+  describe "circuit breaker" do
+    test "trips after max_failures in window" do
+      {:ok, pid} =
+        Orchestrator.start_link(
+          repo_path: "/tmp/nonexistent",
+          poll_interval: 600_000,
+          max_failures: 2,
+          window_minutes: 5,
+          name: {:global, {__MODULE__, :cb_trip_test}}
+        )
+
+      # Inject failure timestamps within the window
+      now = System.monotonic_time(:millisecond)
+
+      :sys.replace_state(pid, fn state ->
+        %{state | failure_window: [now - 1000, now - 2000]}
+      end)
+
+      # Trigger a poll that will error (nonexistent repo_path)
+      Orchestrator.poll(pid)
+      Process.sleep(200)
+
+      assert Orchestrator.tripped?(pid) == true
+      Orchestrator.stop(pid)
+    end
+
+    test "does not trip when failures are outside window" do
+      {:ok, pid} =
+        Orchestrator.start_link(
+          repo_path: "/tmp/nonexistent",
+          poll_interval: 600_000,
+          max_failures: 2,
+          window_minutes: 0,
+          name: {:global, {__MODULE__, :cb_no_trip_test}}
+        )
+
+      # With window_minutes: 0, all past timestamps get pruned immediately
+      # so only the current failure counts — never reaching max_failures of 2
+      Orchestrator.poll(pid)
+      Process.sleep(200)
+
+      assert Orchestrator.tripped?(pid) == false
+      Orchestrator.stop(pid)
+    end
+
+    test "resume resets the circuit" do
+      {:ok, pid} =
+        Orchestrator.start_link(
+          repo_path: "/tmp/nonexistent",
+          poll_interval: 600_000,
+          max_failures: 2,
+          name: {:global, {__MODULE__, :cb_resume_test}}
+        )
+
+      # Manually trip the breaker
+      :sys.replace_state(pid, fn state ->
+        %{state | tripped: true, failure_window: [1, 2, 3]}
+      end)
+
+      assert Orchestrator.tripped?(pid) == true
+
+      assert :ok = Orchestrator.resume(pid)
+      assert Orchestrator.tripped?(pid) == false
+
+      # Verify failure_window was also cleared
+      state = :sys.get_state(pid)
+      assert state.failure_window == []
+
+      Orchestrator.stop(pid)
+    end
+
+    test "tripped orchestrator skips dispatch" do
+      {:ok, pid} =
+        Orchestrator.start_link(
+          repo_path: "/tmp/nonexistent",
+          poll_interval: 600_000,
+          max_failures: 2,
+          name: {:global, {__MODULE__, :cb_skip_dispatch_test}}
+        )
+
+      # Trip the breaker and record current results count
+      :sys.replace_state(pid, fn state ->
+        %{state | tripped: true}
+      end)
+
+      state_before = :sys.get_state(pid)
+      results_before = length(state_before.results)
+
+      # Poll should be a no-op (no dispatch, no crash)
+      Orchestrator.poll(pid)
+      Process.sleep(200)
+
+      assert Process.alive?(pid)
+      assert Orchestrator.tripped?(pid) == true
+
+      # Results should not have changed (no dispatch happened)
+      state_after = :sys.get_state(pid)
+      assert length(state_after.results) == results_before
+
+      Orchestrator.stop(pid)
+    end
+  end
+
   # -- helpers --
 
   defp with_env(env_map, fun) do
