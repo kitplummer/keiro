@@ -22,6 +22,14 @@ if [[ "$PROMPT" == *"FAIL"* ]]; then
   exit 1
 fi
 
+if [[ "$PROMPT" == *"SLOW"* ]]; then
+  sleep 30
+  cat <<'EOF'
+{"result":"Changes applied after delay","cost_usd":0.26,"duration_ms":30000,"num_turns":8}
+EOF
+  exit 0
+fi
+
 if [[ "$PROMPT" == *"RAW_TEXT"* ]]; then
   echo "This is plain text, not JSON"
   exit 0

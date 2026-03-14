@@ -67,5 +67,27 @@ defmodule Keiro.Eng.ClaudeCliTest do
                  max_turns: "10"
                )
     end
+
+    test "times out and returns an error without leaving an orphaned process" do
+      # SLOW mock sleeps for 30s; we pass a 200ms timeout so it fires first
+      assert {:error, msg} =
+               ClaudeCli.run("SLOW task", System.tmp_dir!(), bin: @mock_claude, timeout: 200)
+
+      assert msg =~ "timed out after 200ms"
+    end
+
+    test "respects CLAUDE_TIMEOUT_MS env var when no :timeout option is given" do
+      System.put_env("CLAUDE_TIMEOUT_MS", "200")
+
+      try do
+        # SLOW mock sleeps 30s; 200ms env-var timeout should fire first
+        assert {:error, msg} =
+                 ClaudeCli.run("SLOW task", System.tmp_dir!(), bin: @mock_claude)
+
+        assert msg =~ "timed out after 200ms"
+      after
+        System.delete_env("CLAUDE_TIMEOUT_MS")
+      end
+    end
   end
 end
