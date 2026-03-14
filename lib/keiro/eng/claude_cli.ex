@@ -14,7 +14,7 @@ defmodule Keiro.Eng.ClaudeCli do
 
   @default_allowed_tools "Edit,Read,Write,Bash,Glob,Grep"
   @default_max_turns "50"
-  @default_idle_timeout_ms 120_000
+  @default_idle_timeout_ms 300_000
   @default_max_timeout_ms 1_800_000
 
   @doc """
@@ -33,7 +33,7 @@ defmodule Keiro.Eng.ClaudeCli do
 
   Options:
   - `:idle_timeout` — max ms between output chunks before declaring idle
-    (default: 120_000 = 2 min; also reads `CLAUDE_IDLE_TIMEOUT_MS` env)
+    (default: 300_000 = 5 min; also reads `CLAUDE_IDLE_TIMEOUT_MS` env)
   - `:max_timeout` — absolute cap on total runtime in ms
     (default: 1_800_000 = 30 min; also reads `CLAUDE_MAX_TIMEOUT_MS` env)
   - `:timeout` — legacy alias for `:idle_timeout` (backward compat)
