@@ -121,6 +121,7 @@ defmodule Keiro.Continuous do
           repo_path: repo_path,
           cost_per_task: cost_per_task,
           paused: false,
+          draining: false,
           stall_reported: false,
           watchdog_interval: watchdog_interval,
           stall_threshold_ms: stall_threshold_ms,
@@ -204,36 +205,56 @@ defmodule Keiro.Continuous do
         "budget spent: $#{Float.round(state.budget_spent, 2)}/$#{state.budget_total}"
     )
 
-    # Check budget pacing after spend update
-    state = check_budget_pacing(state, now)
+    # If we were draining (waiting for in-flight task), shut down now
+    if state.draining do
+      Logger.info(
+        "Continuous: draining complete — in-flight task finished, shutting down"
+      )
 
-    {:noreply, state}
+      {:stop, :normal, state}
+    else
+      state = check_budget_pacing(state, now)
+      {:noreply, state}
+    end
   end
 
   @impl GenServer
   def handle_info(:watchdog, state) do
     now = System.monotonic_time(:millisecond)
 
-    # Check budget exhaustion
-    if state.budget_spent >= state.budget_total do
-      Logger.info(
-        "Continuous: budget exhausted ($#{state.budget_spent}/$#{state.budget_total}), shutting down"
-      )
+    budget_exhausted = state.budget_spent >= state.budget_total
+    elapsed_ms = now - state.started_at
+    time_exhausted = elapsed_ms >= state.hours * 3_600_000
 
-      {:stop, :normal, state}
-    else
-      # Check time exhaustion
-      elapsed_ms = now - state.started_at
+    cond do
+      # Budget or time exhausted AND orchestrator is idle — safe to stop
+      (budget_exhausted or time_exhausted) and not orchestrator_busy?(state) ->
+        reason = if budget_exhausted, do: "budget exhausted", else: "time limit reached"
 
-      if elapsed_ms >= state.hours * 3_600_000 do
-        Logger.info("Continuous: time limit reached (#{state.hours}h), shutting down")
+        Logger.info(
+          "Continuous: #{reason} ($#{Float.round(state.budget_spent, 2)}/$#{state.budget_total}), shutting down"
+        )
+
         {:stop, :normal, state}
-      else
+
+      # Budget or time exhausted BUT orchestrator is mid-task — pause and wait
+      budget_exhausted or time_exhausted ->
+        reason = if budget_exhausted, do: "budget", else: "time"
+
+        Logger.info(
+          "Continuous: #{reason} limit reached but orchestrator busy — " <>
+            "waiting for current task to finish before shutdown"
+        )
+
+        state = %{state | draining: true}
+        schedule_watchdog(state.watchdog_interval)
+        {:noreply, state}
+
+      true ->
         state = check_budget_pacing(state, now)
         state = check_stall(state, now)
         schedule_watchdog(state.watchdog_interval)
         {:noreply, state}
-      end
     end
   end
 
@@ -350,6 +371,18 @@ defmodule Keiro.Continuous do
     end
   end
 
+  defp orchestrator_busy?(state) do
+    if Process.alive?(state.orchestrator_pid) do
+      try do
+        Keiro.Orchestrator.busy?(state.orchestrator_pid)
+      catch
+        :exit, _ -> true
+      end
+    else
+      false
+    end
+  end
+
   defp schedule_watchdog(interval) do
     Process.send_after(self(), :watchdog, interval)
   end
@@ -357,7 +390,7 @@ defmodule Keiro.Continuous do
   defp safe_stop(pid) do
     if Process.alive?(pid) do
       try do
-        GenServer.stop(pid, :normal, 5_000)
+        GenServer.stop(pid, :normal, 10_000)
       catch
         :exit, _ -> :ok
       end

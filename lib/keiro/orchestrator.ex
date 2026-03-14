@@ -64,6 +64,9 @@ defmodule Keiro.Orchestrator do
   @doc "Check whether the circuit breaker is currently tripped."
   def tripped?(pid), do: GenServer.call(pid, :tripped?)
 
+  @doc "Check whether the orchestrator is currently dispatching a task."
+  def busy?(pid), do: GenServer.call(pid, :busy?)
+
   @impl GenServer
   def init(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
@@ -120,6 +123,10 @@ defmodule Keiro.Orchestrator do
 
   def handle_call(:tripped?, _from, state) do
     {:reply, state.tripped, state}
+  end
+
+  def handle_call(:busy?, _from, state) do
+    {:reply, state.running, state}
   end
 
   defp schedule_poll(interval) do

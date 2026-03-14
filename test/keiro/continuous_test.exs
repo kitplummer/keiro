@@ -17,6 +17,8 @@ defmodule Keiro.ContinuousTest do
     @impl GenServer
     def handle_call(:tripped?, _from, state), do: {:reply, state.tripped, state}
     def handle_call(:resume, _from, state), do: {:reply, :ok, %{state | tripped: false}}
+    def handle_call(:busy?, _from, state), do: {:reply, Map.get(state, :busy, false), state}
+    def handle_call({:set_busy, busy}, _from, state), do: {:reply, :ok, Map.put(state, :busy, busy)}
   end
 
   defp mock_orchestrator_start(opts) do
@@ -264,6 +266,72 @@ defmodule Keiro.ContinuousTest do
 
       # The process should have stopped (or be stopping)
       refute Process.alive?(pid)
+    end
+
+    test "waits for in-flight task before shutting down on budget exhaustion" do
+      Process.flag(:trap_exit, true)
+
+      orch_pid_holder = :ets.new(:orch_drain, [:set, :public])
+
+      pid =
+        start_continuous(
+          budget_total: 0.10,
+          cost_per_task: 0.10,
+          watchdog_interval: 50,
+          orchestrator_start_fn: fn opts ->
+            {:ok, orch_pid} = mock_orchestrator_start(opts)
+            :ets.insert(orch_pid_holder, {:pid, orch_pid})
+            {:ok, orch_pid}
+          end
+        )
+
+      # Spend the full budget
+      Continuous.on_task_complete(pid, {:ok, %{bead_id: "gl-001"}})
+      # Wait for watchdog to see budget exhaustion
+      Process.sleep(200)
+
+      # Should have shut down since orchestrator is not busy
+      refute Process.alive?(pid)
+      :ets.delete(orch_pid_holder)
+    end
+
+    test "drains when orchestrator is busy at budget exhaustion" do
+      Process.flag(:trap_exit, true)
+
+      orch_pid_holder = :ets.new(:orch_drain2, [:set, :public])
+
+      pid =
+        start_continuous(
+          budget_total: 0.10,
+          cost_per_task: 0.10,
+          watchdog_interval: 50,
+          orchestrator_start_fn: fn opts ->
+            {:ok, orch_pid} = mock_orchestrator_start(opts)
+            :ets.insert(orch_pid_holder, {:pid, orch_pid})
+            # Mark orchestrator as busy (simulating an in-flight task)
+            GenServer.call(orch_pid, {:set_busy, true})
+            {:ok, orch_pid}
+          end
+        )
+
+      # Spend the full budget — but orchestrator is "busy"
+      Continuous.on_task_complete(pid, {:ok, %{bead_id: "gl-001"}})
+      # Wait for watchdog to see budget exhaustion
+      Process.sleep(200)
+
+      # Should still be alive — draining, waiting for orchestrator
+      assert Process.alive?(pid)
+
+      # Now simulate the orchestrator finishing its task
+      [{:pid, orch_pid}] = :ets.lookup(orch_pid_holder, :pid)
+      GenServer.call(orch_pid, {:set_busy, false})
+      Continuous.on_task_complete(pid, {:ok, %{bead_id: "gl-002"}})
+
+      # Should shut down after the task completes
+      Process.sleep(100)
+      refute Process.alive?(pid)
+
+      :ets.delete(orch_pid_holder)
     end
   end
 
