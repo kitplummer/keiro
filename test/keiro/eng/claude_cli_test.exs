@@ -4,6 +4,8 @@ defmodule Keiro.Eng.ClaudeCliTest do
   alias Keiro.Eng.ClaudeCli
 
   @mock_claude Path.expand("../../support/mock_claude.sh", __DIR__)
+  # Mock scripts use echo (unbuffered) — no PTY wrapper needed
+  @mock_opts [bin: @mock_claude, pty_wrap: false]
 
   describe "claude_path/0" do
     test "returns a string path" do
@@ -27,7 +29,7 @@ defmodule Keiro.Eng.ClaudeCliTest do
   describe "run/3" do
     test "returns parsed NDJSON result on success" do
       assert {:ok, result} =
-               ClaudeCli.run("implement this", System.tmp_dir!(), bin: @mock_claude)
+               ClaudeCli.run("implement this", System.tmp_dir!(), @mock_opts)
 
       assert result["result"] == "Changes applied successfully"
       assert result["cost_usd"] == 0.26
@@ -38,26 +40,26 @@ defmodule Keiro.Eng.ClaudeCliTest do
 
     test "returns error when binary not found" do
       assert {:error, "claude CLI not found:" <> _} =
-               ClaudeCli.run("test", System.tmp_dir!(), bin: "/no/such/claude")
+               ClaudeCli.run("test", System.tmp_dir!(), bin: "/no/such/claude", pty_wrap: false)
     end
 
     test "returns error on non-zero exit code" do
       assert {:error, msg} =
-               ClaudeCli.run("FAIL this task", System.tmp_dir!(), bin: @mock_claude)
+               ClaudeCli.run("FAIL this task", System.tmp_dir!(), @mock_opts)
 
       assert msg =~ "claude exited with code"
     end
 
     test "returns error when result event has is_error true (exit 0)" do
       assert {:error, msg} =
-               ClaudeCli.run("ERROR_RESULT test", System.tmp_dir!(), bin: @mock_claude)
+               ClaudeCli.run("ERROR_RESULT test", System.tmp_dir!(), @mock_opts)
 
       assert msg =~ "permission denied"
     end
 
     test "handles non-JSON stdout gracefully (legacy fallback)" do
       assert {:ok, result} =
-               ClaudeCli.run("RAW_TEXT output", System.tmp_dir!(), bin: @mock_claude)
+               ClaudeCli.run("RAW_TEXT output", System.tmp_dir!(), @mock_opts)
 
       assert result["parse_error"] == true
       assert is_binary(result["result"])
@@ -65,17 +67,19 @@ defmodule Keiro.Eng.ClaudeCliTest do
 
     test "accepts custom allowed_tools option" do
       assert {:ok, _} =
-               ClaudeCli.run("implement this", System.tmp_dir!(),
-                 bin: @mock_claude,
-                 allowed_tools: "Edit,Read"
+               ClaudeCli.run(
+                 "implement this",
+                 System.tmp_dir!(),
+                 Keyword.merge(@mock_opts, allowed_tools: "Edit,Read")
                )
     end
 
     test "accepts custom max_turns option" do
       assert {:ok, _} =
-               ClaudeCli.run("implement this", System.tmp_dir!(),
-                 bin: @mock_claude,
-                 max_turns: "10"
+               ClaudeCli.run(
+                 "implement this",
+                 System.tmp_dir!(),
+                 Keyword.merge(@mock_opts, max_turns: "10")
                )
     end
   end
@@ -83,9 +87,10 @@ defmodule Keiro.Eng.ClaudeCliTest do
   describe "idle timeout" do
     test "kills process after idle_timeout with no output" do
       assert {:error, msg} =
-               ClaudeCli.run("SLOW task", System.tmp_dir!(),
-                 bin: @mock_claude,
-                 idle_timeout: 200
+               ClaudeCli.run(
+                 "SLOW task",
+                 System.tmp_dir!(),
+                 Keyword.merge(@mock_opts, idle_timeout: 200)
                )
 
       assert msg =~ "idle for 200ms"
@@ -93,9 +98,10 @@ defmodule Keiro.Eng.ClaudeCliTest do
 
     test "legacy :timeout option works as idle_timeout" do
       assert {:error, msg} =
-               ClaudeCli.run("SLOW task", System.tmp_dir!(),
-                 bin: @mock_claude,
-                 timeout: 200
+               ClaudeCli.run(
+                 "SLOW task",
+                 System.tmp_dir!(),
+                 Keyword.merge(@mock_opts, timeout: 200)
                )
 
       assert msg =~ "idle for 200ms"
@@ -105,9 +111,10 @@ defmodule Keiro.Eng.ClaudeCliTest do
       # CHUNKED mock sends NDJSON events every 300ms. With a 500ms idle_timeout,
       # each event resets the timer so it never fires.
       assert {:ok, result} =
-               ClaudeCli.run("CHUNKED output", System.tmp_dir!(),
-                 bin: @mock_claude,
-                 idle_timeout: 500
+               ClaudeCli.run(
+                 "CHUNKED output",
+                 System.tmp_dir!(),
+                 Keyword.merge(@mock_opts, idle_timeout: 500)
                )
 
       assert result["result"] == "Changes applied with chunks"
@@ -119,7 +126,7 @@ defmodule Keiro.Eng.ClaudeCliTest do
 
       try do
         assert {:error, msg} =
-                 ClaudeCli.run("SLOW task", System.tmp_dir!(), bin: @mock_claude)
+                 ClaudeCli.run("SLOW task", System.tmp_dir!(), @mock_opts)
 
         assert msg =~ "idle for 200ms"
       after
@@ -132,7 +139,7 @@ defmodule Keiro.Eng.ClaudeCliTest do
 
       try do
         assert {:error, msg} =
-                 ClaudeCli.run("SLOW task", System.tmp_dir!(), bin: @mock_claude)
+                 ClaudeCli.run("SLOW task", System.tmp_dir!(), @mock_opts)
 
         assert msg =~ "idle for 200ms"
       after
@@ -145,10 +152,10 @@ defmodule Keiro.Eng.ClaudeCliTest do
     test "kills process after max_timeout even with output" do
       # CHUNKED sends output but max_timeout is very short
       assert {:error, msg} =
-               ClaudeCli.run("CHUNKED output", System.tmp_dir!(),
-                 bin: @mock_claude,
-                 idle_timeout: 5_000,
-                 max_timeout: 200
+               ClaudeCli.run(
+                 "CHUNKED output",
+                 System.tmp_dir!(),
+                 Keyword.merge(@mock_opts, idle_timeout: 5_000, max_timeout: 200)
                )
 
       assert msg =~ "max timeout"
@@ -159,9 +166,10 @@ defmodule Keiro.Eng.ClaudeCliTest do
 
       try do
         assert {:error, msg} =
-                 ClaudeCli.run("CHUNKED output", System.tmp_dir!(),
-                   bin: @mock_claude,
-                   idle_timeout: 5_000
+                 ClaudeCli.run(
+                   "CHUNKED output",
+                   System.tmp_dir!(),
+                   Keyword.merge(@mock_opts, idle_timeout: 5_000)
                  )
 
         assert msg =~ "max timeout"

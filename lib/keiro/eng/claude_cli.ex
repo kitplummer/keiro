@@ -59,7 +59,8 @@ defmodule Keiro.Eng.ClaudeCli do
     allowed_tools = Keyword.get(opts, :allowed_tools, @default_allowed_tools)
     max_turns = Keyword.get(opts, :max_turns, @default_max_turns)
 
-    args = [
+    claude_args = [
+      bin,
       "--print",
       "-p",
       prompt,
@@ -74,13 +75,24 @@ defmodule Keiro.Eng.ClaudeCli do
       "bypassPermissions"
     ]
 
+    # Claude Code (Node.js) buffers stdout when not connected to a TTY.
+    # Wrap with `script -qfc` to allocate a PTY, forcing line-buffered output
+    # so NDJSON events arrive in real-time instead of at process exit.
+    # Disable with `pty_wrap: false` for testing with mock scripts.
+    {executable, args} =
+      if Keyword.get(opts, :pty_wrap, true) do
+        pty_wrap(claude_args)
+      else
+        {hd(claude_args), tl(claude_args)}
+      end
+
     Logger.info(
       "ClaudeCli: running in #{repo_path} (idle_timeout: #{idle_timeout}ms, max: #{max_timeout}ms)"
     )
 
     try do
       port =
-        Port.open({:spawn_executable, bin}, [
+        Port.open({:spawn_executable, executable}, [
           :binary,
           :exit_status,
           {:args, args},
@@ -105,7 +117,8 @@ defmodule Keiro.Eng.ClaudeCli do
           {:error, "claude hit max timeout of #{max_timeout}ms, killed"}
       end
     rescue
-      e in ErlangError -> {:error, "claude CLI not found: #{inspect(e)}"}
+      e in [ErlangError, ArgumentError] ->
+        {:error, "claude CLI not found: #{inspect(e)}"}
     end
   end
 
@@ -149,6 +162,21 @@ defmodule Keiro.Eng.ClaudeCli do
     end
 
     Port.close(port)
+  end
+
+  # Wraps a command in `script -qfc ... /dev/null` to allocate a PTY.
+  # This forces Node.js (Claude Code) to use line-buffered stdout.
+  defp pty_wrap(claude_args) do
+    cmd = Enum.map_join(claude_args, " ", &shell_escape/1)
+    {"/usr/bin/script", ["-qfc", cmd, "/dev/null"]}
+  end
+
+  defp shell_escape(arg) do
+    if String.contains?(arg, [" ", "\"", "'", "\n", "\t", "(", ")", "&", "|", ";", "$"]) do
+      "'" <> String.replace(arg, "'", "'\\''") <> "'"
+    else
+      arg
+    end
   end
 
   defp default_idle_timeout do
