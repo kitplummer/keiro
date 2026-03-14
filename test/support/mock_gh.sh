@@ -31,6 +31,9 @@ EOF
 {"number":1,"title":"Add authentication","body":"We need auth for the API","state":"OPEN","labels":[{"name":"feature"}],"comments":[{"body":"Good idea","author":{"login":"reviewer"}}],"author":{"login":"legit-user"},"createdAt":"2026-03-01T10:00:00Z"}
 EOF
         ;;
+      create)
+        echo "https://github.com/test/repo/issues/99"
+        ;;
       *)
         echo "Unknown gh issue subcommand: $2" >&2
         exit 1

@@ -43,6 +43,7 @@ defmodule Keiro.Orchestrator do
   - `:tqm_enabled` — run TQM analysis after dispatch (default: true)
   - `:max_failures` — number of failures to trip the circuit breaker (default: 3)
   - `:window_minutes` — time window in minutes for failure tracking (default: 5)
+  - `:arch_scan_interval` — schedule an arch scan bead every N completed tasks (default: 10, 0 to disable)
   """
   def start_link(opts) do
     repo_path = Keyword.fetch!(opts, :repo_path)
@@ -77,6 +78,7 @@ defmodule Keiro.Orchestrator do
     tqm_enabled = Keyword.get(opts, :tqm_enabled, true)
     max_failures = Keyword.get(opts, :max_failures, 3)
     window_minutes = Keyword.get(opts, :window_minutes, 5)
+    arch_scan_interval = Keyword.get(opts, :arch_scan_interval, 10)
 
     state = %{
       repo_path: repo_path,
@@ -92,7 +94,8 @@ defmodule Keiro.Orchestrator do
       window_minutes: window_minutes,
       tripped: false,
       last_bead_labels: [],
-      tqm_recent_patterns: %{}
+      tqm_recent_patterns: %{},
+      arch_scan_interval: arch_scan_interval
     }
 
     schedule_poll(poll_interval)
@@ -154,6 +157,7 @@ defmodule Keiro.Orchestrator do
         |> Map.put(:last_bead_labels, labels)
         |> Map.update!(:results, &[entry | &1])
         |> maybe_run_tqm()
+        |> maybe_schedule_arch_scan()
         |> Map.put(:running, false)
 
       {{:error, reason}, labels} ->
@@ -164,6 +168,7 @@ defmodule Keiro.Orchestrator do
         |> Map.put(:last_bead_labels, labels)
         |> Map.update!(:results, &[entry | &1])
         |> maybe_run_tqm()
+        |> maybe_schedule_arch_scan()
         |> record_failure()
         |> Map.put(:running, false)
 
@@ -180,6 +185,7 @@ defmodule Keiro.Orchestrator do
         |> Map.put(:last_bead_labels, [])
         |> Map.update!(:results, &[entry | &1])
         |> maybe_run_tqm()
+        |> maybe_schedule_arch_scan()
         |> Map.put(:running, false)
 
       {:error, reason} ->
@@ -190,6 +196,7 @@ defmodule Keiro.Orchestrator do
         |> Map.put(:last_bead_labels, [])
         |> Map.update!(:results, &[entry | &1])
         |> maybe_run_tqm()
+        |> maybe_schedule_arch_scan()
         |> record_failure()
         |> Map.put(:running, false)
     end
@@ -563,6 +570,55 @@ defmodule Keiro.Orchestrator do
   defp summarize_eng_result(%{outcome: outcome}) when is_binary(outcome), do: outcome
   defp summarize_eng_result(%{status: status}), do: to_string(status)
   defp summarize_eng_result(result), do: inspect(result, limit: 200)
+
+  # -- Periodic arch scan --
+
+  defp maybe_schedule_arch_scan(%{arch_scan_interval: 0} = state), do: state
+  defp maybe_schedule_arch_scan(%{arch_scan_interval: nil} = state), do: state
+
+  defp maybe_schedule_arch_scan(%{last_bead_labels: labels} = state) when is_list(labels) do
+    if "arch" in labels do
+      Logger.debug("Orchestrator: skipping arch scan — last bead was an arch bead")
+      state
+    else
+      do_maybe_schedule_arch_scan(state)
+    end
+  end
+
+  defp maybe_schedule_arch_scan(state), do: do_maybe_schedule_arch_scan(state)
+
+  defp do_maybe_schedule_arch_scan(state) do
+    interval = state.arch_scan_interval || 10
+    completed = length(state.results)
+
+    if rem(completed, interval) == 0 and completed > 0 do
+      client = BeadsClient.new(state.repo_path)
+
+      case BeadsClient.ready(client) do
+        {:ok, beads} ->
+          has_arch = Enum.any?(beads, &("arch" in (Map.get(&1, :labels) || [])))
+
+          unless has_arch do
+            Logger.info(
+              "Orchestrator: scheduling periodic architect scan (every #{interval} tasks)"
+            )
+
+            BeadsClient.create(client, "Periodic architect scan",
+              type: "task",
+              priority: 3,
+              labels: ["arch"],
+              description:
+                "Automated periodic scan: triage issues, review backlog, check ADRs for implementation gaps."
+            )
+          end
+
+        _ ->
+          :ok
+      end
+    end
+
+    state
+  end
 
   # -- TQM integration --
 
