@@ -46,6 +46,18 @@ if [[ "$PROMPT" == *"CHUNKED"* ]]; then
   exit 0
 fi
 
+if [[ "$PROMPT" == *"STDERR_MIX"* ]]; then
+  # Simulates real claude --print behavior: progress on stderr (merged
+  # into stdout by Port's :stderr_to_stdout), final JSON on stdout.
+  echo "Thinking..." >&2
+  sleep 0.2
+  echo "Reading files..." >&2
+  sleep 0.2
+  echo "Writing code..." >&2
+  echo '{"result":"Changes applied with stderr noise","cost_usd":0.18,"duration_ms":4000,"num_turns":5}'
+  exit 0
+fi
+
 if [[ "$PROMPT" == *"RAW_TEXT"* ]]; then
   echo "This is plain text, not JSON"
   exit 0

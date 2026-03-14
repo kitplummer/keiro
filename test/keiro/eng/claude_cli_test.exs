@@ -54,6 +54,18 @@ defmodule Keiro.Eng.ClaudeCliTest do
       assert is_binary(result["result"])
     end
 
+    test "extracts JSON from mixed stderr+stdout output" do
+      # STDERR_MIX mock sends progress on stderr and JSON on stdout.
+      # With :stderr_to_stdout, Port merges them — parse_result must
+      # extract the JSON line from the noise.
+      assert {:ok, result} =
+               ClaudeCli.run("STDERR_MIX output", System.tmp_dir!(), bin: @mock_claude)
+
+      assert result["result"] == "Changes applied with stderr noise"
+      assert result["cost_usd"] == 0.18
+      assert result["num_turns"] == 5
+    end
+
     test "accepts custom allowed_tools option" do
       assert {:ok, _} =
                ClaudeCli.run("implement this", System.tmp_dir!(),

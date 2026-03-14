@@ -82,6 +82,7 @@ defmodule Keiro.Eng.ClaudeCli do
         Port.open({:spawn_executable, bin}, [
           :binary,
           :exit_status,
+          :stderr_to_stdout,
           {:args, args},
           {:cd, repo_path}
         ])
@@ -174,8 +175,11 @@ defmodule Keiro.Eng.ClaudeCli do
     end
   end
 
-  defp parse_result(stdout) do
-    case Jason.decode(stdout) do
+  defp parse_result(output) do
+    # With :stderr_to_stdout, output may contain stderr noise mixed with
+    # the final JSON. Try parsing the full output first, then try to
+    # extract a JSON object from the last line(s).
+    case Jason.decode(output) do
       {:ok, result} when is_map(result) ->
         {:ok, result}
 
@@ -183,8 +187,32 @@ defmodule Keiro.Eng.ClaudeCli do
         {:ok, %{"result" => other}}
 
       {:error, _reason} ->
-        # Fallback: treat raw stdout as the result text
-        {:ok, %{"result" => String.trim(stdout), "parse_error" => true}}
+        extract_json_from_mixed_output(output)
+    end
+  end
+
+  defp extract_json_from_mixed_output(output) do
+    # Try each line from the end, looking for a valid JSON object.
+    # claude --print --output-format json emits the JSON as the last output.
+    lines = String.split(output, "\n")
+
+    result =
+      lines
+      |> Enum.reverse()
+      |> Enum.find_value(fn line ->
+        trimmed = String.trim(line)
+
+        if String.starts_with?(trimmed, "{") do
+          case Jason.decode(trimmed) do
+            {:ok, map} when is_map(map) -> {:ok, map}
+            _ -> nil
+          end
+        end
+      end)
+
+    case result do
+      {:ok, map} -> {:ok, map}
+      nil -> {:ok, %{"result" => String.trim(output), "parse_error" => true}}
     end
   end
 end
