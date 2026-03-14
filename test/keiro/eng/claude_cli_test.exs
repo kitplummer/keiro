@@ -26,7 +26,9 @@ defmodule Keiro.Eng.ClaudeCliTest do
 
   describe "run/3" do
     test "returns parsed JSON on success" do
-      assert {:ok, result} = ClaudeCli.run("implement this", System.tmp_dir!(), bin: @mock_claude)
+      assert {:ok, result} =
+               ClaudeCli.run("implement this", System.tmp_dir!(), bin: @mock_claude)
+
       assert result["result"] == "Changes applied successfully"
       assert result["cost_usd"] == 0.26
       assert result["num_turns"] == 8
@@ -67,26 +69,94 @@ defmodule Keiro.Eng.ClaudeCliTest do
                  max_turns: "10"
                )
     end
+  end
 
-    test "times out and returns an error without leaving an orphaned process" do
-      # SLOW mock sleeps for 30s; we pass a 200ms timeout so it fires first
+  describe "idle timeout" do
+    test "kills process after idle_timeout with no output" do
       assert {:error, msg} =
-               ClaudeCli.run("SLOW task", System.tmp_dir!(), bin: @mock_claude, timeout: 200)
+               ClaudeCli.run("SLOW task", System.tmp_dir!(),
+                 bin: @mock_claude,
+                 idle_timeout: 200
+               )
 
-      assert msg =~ "timed out after 200ms"
+      assert msg =~ "idle for 200ms"
     end
 
-    test "respects CLAUDE_TIMEOUT_MS env var when no :timeout option is given" do
-      System.put_env("CLAUDE_TIMEOUT_MS", "200")
+    test "legacy :timeout option works as idle_timeout" do
+      assert {:error, msg} =
+               ClaudeCli.run("SLOW task", System.tmp_dir!(),
+                 bin: @mock_claude,
+                 timeout: 200
+               )
+
+      assert msg =~ "idle for 200ms"
+    end
+
+    test "chunked output resets idle timer — process completes" do
+      # CHUNKED mock sends data every 300ms. With a 500ms idle_timeout,
+      # each chunk resets the timer so it never fires.
+      assert {:ok, result} =
+               ClaudeCli.run("CHUNKED output", System.tmp_dir!(),
+                 bin: @mock_claude,
+                 idle_timeout: 500
+               )
+
+      assert result["result"] == "Changes applied with chunks"
+    end
+
+    test "respects CLAUDE_IDLE_TIMEOUT_MS env var" do
+      System.put_env("CLAUDE_IDLE_TIMEOUT_MS", "200")
 
       try do
-        # SLOW mock sleeps 30s; 200ms env-var timeout should fire first
         assert {:error, msg} =
                  ClaudeCli.run("SLOW task", System.tmp_dir!(), bin: @mock_claude)
 
-        assert msg =~ "timed out after 200ms"
+        assert msg =~ "idle for 200ms"
+      after
+        System.delete_env("CLAUDE_IDLE_TIMEOUT_MS")
+      end
+    end
+
+    test "falls back to CLAUDE_TIMEOUT_MS env var for backward compat" do
+      System.put_env("CLAUDE_TIMEOUT_MS", "200")
+
+      try do
+        assert {:error, msg} =
+                 ClaudeCli.run("SLOW task", System.tmp_dir!(), bin: @mock_claude)
+
+        assert msg =~ "idle for 200ms"
       after
         System.delete_env("CLAUDE_TIMEOUT_MS")
+      end
+    end
+  end
+
+  describe "max timeout" do
+    test "kills process after max_timeout even with output" do
+      # CHUNKED sends output but max_timeout is very short
+      assert {:error, msg} =
+               ClaudeCli.run("CHUNKED output", System.tmp_dir!(),
+                 bin: @mock_claude,
+                 idle_timeout: 5_000,
+                 max_timeout: 200
+               )
+
+      assert msg =~ "max timeout"
+    end
+
+    test "respects CLAUDE_MAX_TIMEOUT_MS env var" do
+      System.put_env("CLAUDE_MAX_TIMEOUT_MS", "200")
+
+      try do
+        assert {:error, msg} =
+                 ClaudeCli.run("CHUNKED output", System.tmp_dir!(),
+                   bin: @mock_claude,
+                   idle_timeout: 5_000
+                 )
+
+        assert msg =~ "max timeout"
+      after
+        System.delete_env("CLAUDE_MAX_TIMEOUT_MS")
       end
     end
   end

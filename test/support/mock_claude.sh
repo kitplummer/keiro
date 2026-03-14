@@ -30,6 +30,22 @@ EOF
   exit 0
 fi
 
+if [[ "$PROMPT" == *"CHUNKED"* ]]; then
+  # Simulates Claude producing output in chunks (resets idle timer).
+  # Real claude --print --output-format json sends progress to stderr
+  # and final JSON to stdout. We send chunks to stdout to exercise the
+  # Port data path, but the final output is valid JSON.
+  echo -n '{"progress":"' >&1
+  sleep 0.3
+  echo -n 'reading...' >&1
+  sleep 0.3
+  echo -n 'writing...' >&1
+  sleep 0.3
+  echo -n '","result":"Changes applied with chunks","cost_usd":0.30,"duration_ms":5000,"num_turns":12}' >&1
+  echo "" >&1
+  exit 0
+fi
+
 if [[ "$PROMPT" == *"RAW_TEXT"* ]]; then
   echo "This is plain text, not JSON"
   exit 0

@@ -483,7 +483,7 @@ defmodule Keiro.Orchestrator do
 
   defp claude_engineer_runner(prompt, tool_context) do
     repo_path = Map.get(tool_context, :repo_path, ".")
-    Keiro.Eng.ClaudeCli.run(prompt, repo_path, timeout: 300_000)
+    Keiro.Eng.ClaudeCli.run(prompt, repo_path, idle_timeout: 120_000, max_timeout: 1_800_000)
   end
 
   defp eng_prompt(_bead, validated, _prev_stages) do

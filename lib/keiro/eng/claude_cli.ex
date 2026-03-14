@@ -4,15 +4,18 @@ defmodule Keiro.Eng.ClaudeCli do
 
   Configurable via `CLAUDE_BIN_PATH` env or application config `:claude_bin_path`.
 
-  The default timeout is 600,000 ms (10 minutes) and can be overridden via the
-  `CLAUDE_TIMEOUT_MS` environment variable or the `:timeout` option.
+  Uses a **per-chunk idle timeout** instead of a fixed deadline. As long as
+  Claude is producing output (reading files, writing code, running tests),
+  the timer resets. Only when output stops for `:idle_timeout` ms does the
+  process get killed. A hard `:max_timeout` cap prevents runaway sessions.
   """
 
   require Logger
 
   @default_allowed_tools "Edit,Read,Write,Bash,Glob,Grep"
   @default_max_turns "50"
-  @default_timeout_ms 600_000
+  @default_idle_timeout_ms 120_000
+  @default_max_timeout_ms 1_800_000
 
   @doc """
   Resolve the claude binary path from config/env.
@@ -29,7 +32,11 @@ defmodule Keiro.Eng.ClaudeCli do
   Sends `prompt` to Claude Code as a subprocess, working in `repo_path`.
 
   Options:
-  - `:timeout` — subprocess timeout in ms (default: 600_000; also reads `CLAUDE_TIMEOUT_MS` env)
+  - `:idle_timeout` — max ms between output chunks before declaring idle
+    (default: 120_000 = 2 min; also reads `CLAUDE_IDLE_TIMEOUT_MS` env)
+  - `:max_timeout` — absolute cap on total runtime in ms
+    (default: 1_800_000 = 30 min; also reads `CLAUDE_MAX_TIMEOUT_MS` env)
+  - `:timeout` — legacy alias for `:idle_timeout` (backward compat)
   - `:allowed_tools` — comma-separated tool list (default: "Edit,Read,Write,Bash,Glob,Grep")
   - `:max_turns` — max agentic turns (default: "50")
 
@@ -42,7 +49,13 @@ defmodule Keiro.Eng.ClaudeCli do
   @spec run(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, String.t()}
   def run(prompt, repo_path, opts \\ []) do
     bin = Keyword.get(opts, :bin, claude_path())
-    timeout = Keyword.get(opts, :timeout, default_timeout())
+
+    idle_timeout =
+      Keyword.get(opts, :idle_timeout) ||
+        Keyword.get(opts, :timeout) ||
+        default_idle_timeout()
+
+    max_timeout = Keyword.get(opts, :max_timeout, default_max_timeout())
     allowed_tools = Keyword.get(opts, :allowed_tools, @default_allowed_tools)
     max_turns = Keyword.get(opts, :max_turns, @default_max_turns)
 
@@ -60,7 +73,9 @@ defmodule Keiro.Eng.ClaudeCli do
       "bypassPermissions"
     ]
 
-    Logger.info("ClaudeCli: running in #{repo_path} (timeout: #{timeout}ms)")
+    Logger.info(
+      "ClaudeCli: running in #{repo_path} (idle_timeout: #{idle_timeout}ms, max: #{max_timeout}ms)"
+    )
 
     try do
       port =
@@ -71,47 +86,61 @@ defmodule Keiro.Eng.ClaudeCli do
           {:cd, repo_path}
         ])
 
-      deadline = System.monotonic_time(:millisecond) + timeout
+      deadline = System.monotonic_time(:millisecond) + max_timeout
 
-      case collect_port_output(port, [], deadline) do
+      case collect_port_output(port, [], idle_timeout, deadline) do
         {:done, output, 0} ->
           parse_result(output)
 
         {:done, output, code} ->
           {:error, "claude exited with code #{code}: #{String.slice(output, 0, 500)}"}
 
-        {:timeout, _partial} ->
-          kill_port_process(port, timeout)
-          {:error, "claude timed out after #{timeout}ms"}
+        {:idle_timeout, _partial} ->
+          kill_port_process(port, "idle #{idle_timeout}ms")
+          {:error, "claude idle for #{idle_timeout}ms (no output), killed"}
+
+        {:max_timeout, _partial} ->
+          kill_port_process(port, "max #{max_timeout}ms")
+          {:error, "claude hit max timeout of #{max_timeout}ms, killed"}
       end
     rescue
       e in ErlangError -> {:error, "claude CLI not found: #{inspect(e)}"}
     end
   end
 
-  # Reads data from the port until the process exits or the deadline passes.
-  # Uses deadline (absolute monotonic ms) so recursive calls don't reset the timer.
-  defp collect_port_output(port, chunks, deadline) do
-    remaining = max(0, deadline - System.monotonic_time(:millisecond))
+  # Reads data from the port until the process exits, idle timeout fires,
+  # or absolute deadline passes. Each chunk of output resets the idle timer.
+  defp collect_port_output(port, chunks, idle_timeout, deadline) do
+    now = System.monotonic_time(:millisecond)
+    remaining_max = max(0, deadline - now)
+    wait = min(idle_timeout, remaining_max)
 
-    receive do
-      {^port, {:data, data}} ->
-        collect_port_output(port, [chunks | [data]], deadline)
+    if remaining_max <= 0 do
+      {:max_timeout, IO.iodata_to_binary(chunks)}
+    else
+      receive do
+        {^port, {:data, data}} ->
+          collect_port_output(port, [chunks | [data]], idle_timeout, deadline)
 
-      {^port, {:exit_status, code}} ->
-        {:done, IO.iodata_to_binary(chunks), code}
-    after
-      remaining ->
-        {:timeout, IO.iodata_to_binary(chunks)}
+        {^port, {:exit_status, code}} ->
+          {:done, IO.iodata_to_binary(chunks), code}
+      after
+        wait ->
+          if wait < idle_timeout do
+            {:max_timeout, IO.iodata_to_binary(chunks)}
+          else
+            {:idle_timeout, IO.iodata_to_binary(chunks)}
+          end
+      end
     end
   end
 
   # Kills the OS process backing the port so we don't leave orphaned claude
   # subprocesses running after Elixir declares a timeout.
-  defp kill_port_process(port, timeout) do
+  defp kill_port_process(port, reason) do
     case :erlang.port_info(port, :os_pid) do
       {:os_pid, os_pid} ->
-        Logger.warning("ClaudeCli: killing OS PID #{os_pid} after #{timeout}ms timeout")
+        Logger.warning("ClaudeCli: killing OS PID #{os_pid} (#{reason})")
         System.cmd("kill", ["-9", to_string(os_pid)], stderr_to_stdout: true)
 
       _ ->
@@ -121,16 +150,27 @@ defmodule Keiro.Eng.ClaudeCli do
     Port.close(port)
   end
 
-  defp default_timeout do
-    case System.get_env("CLAUDE_TIMEOUT_MS") do
-      nil ->
-        @default_timeout_ms
+  defp default_idle_timeout do
+    read_env_int("CLAUDE_IDLE_TIMEOUT_MS") ||
+      read_env_int("CLAUDE_TIMEOUT_MS") ||
+      @default_idle_timeout_ms
+  end
 
-      val ->
-        case Integer.parse(val) do
-          {ms, ""} when ms > 0 -> ms
-          _ -> @default_timeout_ms
-        end
+  defp default_max_timeout do
+    read_env_int("CLAUDE_MAX_TIMEOUT_MS") || @default_max_timeout_ms
+  end
+
+  defp read_env_int(var) do
+    case System.get_env(var) do
+      nil -> nil
+      val -> parse_pos_int(val)
+    end
+  end
+
+  defp parse_pos_int(val) do
+    case Integer.parse(val) do
+      {ms, ""} when ms > 0 -> ms
+      _ -> nil
     end
   end
 
