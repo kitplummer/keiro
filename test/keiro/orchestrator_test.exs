@@ -51,6 +51,21 @@ defmodule Keiro.OrchestratorTest do
       assert {:ok, Keiro.Ops.UplinkAgent} = Orchestrator.route(bead)
     end
 
+    test "routes tqm-labeled beads to ArchitectAgent" do
+      bead = %Bead{id: "gl-023", title: "TQM: low_success_rate", labels: ["tqm"]}
+      assert {:ok, Keiro.Arch.ArchitectAgent} = Orchestrator.route(bead)
+    end
+
+    test "tqm label takes priority over eng (prevents cascade)" do
+      bead = %Bead{id: "gl-024", title: "TQM remediation", labels: ["eng", "tqm"]}
+      assert {:ok, Keiro.Arch.ArchitectAgent} = Orchestrator.route(bead)
+    end
+
+    test "tqm label takes priority over ops" do
+      bead = %Bead{id: "gl-025", title: "TQM ops issue", labels: ["tqm", "ops"]}
+      assert {:ok, Keiro.Arch.ArchitectAgent} = Orchestrator.route(bead)
+    end
+
     test "returns error for beads without matching agent" do
       bead = %Bead{id: "gl-003", title: "Write docs", labels: ["docs"]}
       assert {:error, :no_matching_agent} = Orchestrator.route(bead)
@@ -299,6 +314,29 @@ defmodule Keiro.OrchestratorTest do
 
         Orchestrator.stop(pid)
       end)
+    end
+
+    test "skips TQM analysis when circuit breaker is tripped" do
+      {:ok, pid} =
+        Orchestrator.start_link(
+          repo_path: "/tmp/nonexistent",
+          poll_interval: 600_000,
+          name: {:global, {__MODULE__, :tqm_tripped_skip}},
+          tqm_enabled: true
+        )
+
+      # Trip the breaker and inject some results
+      :sys.replace_state(pid, fn state ->
+        %{state | tripped: true, results: [%{status: :error, error: "fail", bead_id: nil}]}
+      end)
+
+      # Poll should be a no-op (tripped), and TQM should not run
+      Orchestrator.poll(pid)
+      Process.sleep(100)
+
+      assert Process.alive?(pid)
+      assert Orchestrator.tripped?(pid) == true
+      Orchestrator.stop(pid)
     end
 
     test "GenServer with tqm_enabled: false does not accumulate" do

@@ -242,6 +242,7 @@ defmodule Keiro.Orchestrator do
   @doc """
   Route a bead to the appropriate agent or pipeline based on labels.
 
+  - "tqm" beads route to ArchitectAgent (triage, never back to engineer pipeline)
   - "eng" beads route to the engineer pipeline (on success, creates an ops deploy bead)
   - "ops" beads route directly to UplinkAgent
   - "arch" beads route directly to ArchitectAgent
@@ -252,6 +253,7 @@ defmodule Keiro.Orchestrator do
     labels = bead.labels || []
 
     cond do
+      "tqm" in labels -> {:ok, Keiro.Arch.ArchitectAgent}
       "eng" in labels -> {:ok, :engineer_pipeline}
       "ops" in labels -> {:ok, Keiro.Ops.UplinkAgent}
       "arch" in labels -> {:ok, Keiro.Arch.ArchitectAgent}
@@ -509,6 +511,11 @@ defmodule Keiro.Orchestrator do
 
   defp maybe_run_tqm(%{tqm_enabled: false} = state), do: state
 
+  defp maybe_run_tqm(%{tripped: true} = state) do
+    Logger.debug("Orchestrator: skipping TQM analysis — circuit breaker tripped")
+    state
+  end
+
   defp maybe_run_tqm(%{tqm_enabled: true, results: results, repo_path: repo_path} = state) do
     run_tqm_analysis(results, repo_path)
     state
@@ -528,7 +535,7 @@ defmodule Keiro.Orchestrator do
         BeadsClient.create(client, title,
           type: "task",
           priority: tqm_severity_to_priority(pattern.severity),
-          labels: ["eng", "tqm"],
+          labels: ["tqm"],
           description: description
         )
       end)
