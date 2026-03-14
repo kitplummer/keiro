@@ -18,7 +18,9 @@ defmodule Keiro.ContinuousTest do
     def handle_call(:tripped?, _from, state), do: {:reply, state.tripped, state}
     def handle_call(:resume, _from, state), do: {:reply, :ok, %{state | tripped: false}}
     def handle_call(:busy?, _from, state), do: {:reply, Map.get(state, :busy, false), state}
-    def handle_call({:set_busy, busy}, _from, state), do: {:reply, :ok, Map.put(state, :busy, busy)}
+
+    def handle_call({:set_busy, busy}, _from, state),
+      do: {:reply, :ok, Map.put(state, :busy, busy)}
   end
 
   defp mock_orchestrator_start(opts) do

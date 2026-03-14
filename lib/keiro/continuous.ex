@@ -207,9 +207,7 @@ defmodule Keiro.Continuous do
 
     # If we were draining (waiting for in-flight task), shut down now
     if state.draining do
-      Logger.info(
-        "Continuous: draining complete — in-flight task finished, shutting down"
-      )
+      Logger.info("Continuous: draining complete — in-flight task finished, shutting down")
 
       {:stop, :normal, state}
     else
