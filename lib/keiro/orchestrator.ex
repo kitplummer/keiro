@@ -87,7 +87,9 @@ defmodule Keiro.Orchestrator do
       failure_window: [],
       max_failures: max_failures,
       window_minutes: window_minutes,
-      tripped: false
+      tripped: false,
+      last_bead_labels: [],
+      tqm_recent_patterns: %{}
     }
 
     schedule_poll(poll_interval)
@@ -133,28 +135,52 @@ defmodule Keiro.Orchestrator do
     state = %{state | running: true}
 
     opts =
-      [repo_path: state.repo_path, timeout: state.timeout]
+      [repo_path: state.repo_path, timeout: state.timeout, _return_labels: true]
       |> maybe_add(:approve_fn, state.approve_fn)
 
     case run_next(opts) do
-      {:ok, _result} = result ->
+      {{:ok, _result} = result, labels} ->
         if state.on_result, do: state.on_result.(result)
         entry = %{status: :ok, bead_id: nil}
 
         state
+        |> Map.put(:last_bead_labels, labels)
         |> Map.update!(:results, &[entry | &1])
         |> maybe_run_tqm()
+        |> Map.put(:running, false)
+
+      {{:error, reason}, labels} ->
+        Logger.warning("Orchestrator poll error: #{inspect(reason)}")
+        entry = %{status: :error, error: inspect(reason), bead_id: nil}
+
+        state
+        |> Map.put(:last_bead_labels, labels)
+        |> Map.update!(:results, &[entry | &1])
+        |> maybe_run_tqm()
+        |> record_failure()
         |> Map.put(:running, false)
 
       :no_work ->
         Logger.debug("Orchestrator: no ready beads")
         %{state | running: false}
 
+      # Fallback for standalone run_next (no _return_labels)
+      {:ok, _result} = result ->
+        if state.on_result, do: state.on_result.(result)
+        entry = %{status: :ok, bead_id: nil}
+
+        state
+        |> Map.put(:last_bead_labels, [])
+        |> Map.update!(:results, &[entry | &1])
+        |> maybe_run_tqm()
+        |> Map.put(:running, false)
+
       {:error, reason} ->
         Logger.warning("Orchestrator poll error: #{inspect(reason)}")
         entry = %{status: :error, error: inspect(reason), bead_id: nil}
 
         state
+        |> Map.put(:last_bead_labels, [])
         |> Map.update!(:results, &[entry | &1])
         |> maybe_run_tqm()
         |> record_failure()
@@ -184,6 +210,9 @@ defmodule Keiro.Orchestrator do
   Options:
   - `:repo_path` — path to the beads-enabled repo (required)
   - `:timeout` — agent timeout in ms (default: 60_000)
+
+  Returns `{result, labels}` tuple when called from GenServer poll,
+  or just `result` for standalone usage.
   """
   @spec run_next(keyword()) :: {:ok, map()} | {:error, String.t()} | :no_work
   def run_next(opts) do
@@ -198,7 +227,13 @@ defmodule Keiro.Orchestrator do
       {:ok, [bead | _]} ->
         Logger.info("Orchestrator: routing bead #{bead.id} — #{bead.title}")
         BeadsClient.update_status(client, bead.id, "in_progress")
-        dispatch(bead, timeout, opts)
+        result = dispatch(bead, timeout, opts)
+
+        if opts[:_return_labels] do
+          {result, bead.labels || []}
+        else
+          result
+        end
 
       {:error, reason} ->
         {:error, "Failed to fetch ready beads: #{reason}"}
@@ -516,19 +551,63 @@ defmodule Keiro.Orchestrator do
     state
   end
 
-  defp maybe_run_tqm(%{tqm_enabled: true, results: results, repo_path: repo_path} = state) do
-    run_tqm_analysis(results, repo_path)
-    state
+  defp maybe_run_tqm(%{last_bead_labels: labels} = state) when is_list(labels) do
+    if "tqm" in labels do
+      Logger.debug("Orchestrator: skipping TQM analysis — last bead was a TQM bead")
+      state
+    else
+      maybe_run_tqm_with_dedup(state)
+    end
   end
 
-  defp run_tqm_analysis(results, repo_path) do
-    patterns = TQM.Analyzer.analyze(results)
+  defp maybe_run_tqm(%{tqm_enabled: true} = state), do: maybe_run_tqm_with_dedup(state)
 
-    if patterns != [] do
-      Logger.info("TQM: detected #{length(patterns)} pattern(s)")
+  defp maybe_run_tqm_with_dedup(
+         %{tqm_enabled: true, results: results, repo_path: repo_path} = state
+       ) do
+    patterns = run_tqm_analysis(results, repo_path, state.tqm_recent_patterns)
+
+    # Track recently created patterns (5 min cooldown)
+    now = System.monotonic_time(:millisecond)
+
+    new_recent =
+      Enum.reduce(patterns, state.tqm_recent_patterns, fn p, acc ->
+        Map.put(acc, p.name, now)
+      end)
+
+    # Prune patterns older than 5 minutes
+    cutoff = now - 300_000
+
+    pruned =
+      new_recent
+      |> Enum.filter(fn {_name, ts} -> ts >= cutoff end)
+      |> Map.new()
+
+    %{state | tqm_recent_patterns: pruned}
+  end
+
+  defp run_tqm_analysis(results, repo_path, recent_patterns \\ %{}) do
+    patterns = TQM.Analyzer.analyze(results)
+    now = System.monotonic_time(:millisecond)
+    cooldown = 300_000
+
+    # Filter out patterns that were recently created (within cooldown window)
+    new_patterns =
+      Enum.reject(patterns, fn p ->
+        case Map.get(recent_patterns, p.name) do
+          nil -> false
+          ts -> now - ts < cooldown
+        end
+      end)
+
+    if new_patterns != [] do
+      Logger.info(
+        "TQM: detected #{length(new_patterns)} new pattern(s) (#{length(patterns) - length(new_patterns)} deduplicated)"
+      )
+
       client = BeadsClient.new(repo_path)
 
-      Enum.each(patterns, fn pattern ->
+      Enum.each(new_patterns, fn pattern ->
         title = "TQM: #{pattern.name} (#{pattern.severity})"
         description = "#{pattern.description}\n\nRemediation: #{pattern.remediation}"
 
@@ -541,7 +620,7 @@ defmodule Keiro.Orchestrator do
       end)
     end
 
-    patterns
+    new_patterns
   end
 
   defp tqm_severity_to_priority(:critical), do: 0
