@@ -391,7 +391,16 @@ defmodule Keiro.Orchestrator do
         comment = format_agent_result_comment(agent_name, :error, reason)
         BeadsClient.comment(client, bead.id, comment)
         BeadsClient.update_status(client, bead.id, "blocked")
-        create_investigation_bead(client, bead, agent_name, reason)
+
+        # Don't create investigation beads for beads that are themselves
+        # investigations or TQM beads — prevents infinite cascade.
+        if investigation_bead?(bead) do
+          Logger.debug(
+            "Orchestrator: skipping investigation bead for #{bead.id} (already an investigation/tqm bead)"
+          )
+        else
+          create_investigation_bead(client, bead, agent_name, reason)
+        end
     end
   end
 
@@ -413,6 +422,12 @@ defmodule Keiro.Orchestrator do
     **Status:** error
     **Reason:** #{inspect(reason, limit: 500, printable_limit: 1000)}
     """
+  end
+
+  defp investigation_bead?(bead) do
+    labels = bead.labels || []
+    title = bead.title || ""
+    "tqm" in labels or String.starts_with?(title, "Investigate:")
   end
 
   @doc false

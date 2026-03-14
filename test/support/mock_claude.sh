@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Mock claude CLI for testing.
+# Emits NDJSON events matching claude --print --output-format stream-json.
 set -e
 
 # Parse args to find the prompt
@@ -10,6 +11,7 @@ while [[ $# -gt 0 ]]; do
     --print) shift ;;
     -p) PROMPT="$2"; shift 2 ;;
     --output-format) OUTPUT_FORMAT="$2"; shift 2 ;;
+    --verbose) shift ;;
     --allowedTools) shift 2 ;;
     --max-turns) shift 2 ;;
     --permission-mode) shift 2 ;;
@@ -18,43 +20,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$PROMPT" == *"FAIL"* ]]; then
-  echo "Something went wrong" >&2
+  echo '{"type":"system","subtype":"init","cwd":"/tmp","session_id":"test"}'
+  echo '{"type":"result","subtype":"error","is_error":true,"result":"Something went wrong","duration_ms":100,"num_turns":1,"total_cost_usd":0.01,"session_id":"test"}'
   exit 1
 fi
 
 if [[ "$PROMPT" == *"SLOW"* ]]; then
   sleep 30
-  cat <<'EOF'
-{"result":"Changes applied after delay","cost_usd":0.26,"duration_ms":30000,"num_turns":8}
-EOF
+  echo '{"type":"system","subtype":"init","cwd":"/tmp","session_id":"test"}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"Changes applied after delay","duration_ms":30000,"num_turns":8,"total_cost_usd":0.26,"session_id":"test"}'
   exit 0
 fi
 
 if [[ "$PROMPT" == *"CHUNKED"* ]]; then
-  # Simulates Claude producing output in chunks (resets idle timer).
-  # Real claude --print --output-format json sends progress to stderr
-  # and final JSON to stdout. We send chunks to stdout to exercise the
-  # Port data path, but the final output is valid JSON.
-  echo -n '{"progress":"' >&1
+  # Simulates Claude producing NDJSON events in chunks (resets idle timer).
+  echo '{"type":"system","subtype":"init","cwd":"/tmp","session_id":"test"}'
   sleep 0.3
-  echo -n 'reading...' >&1
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Reading files..."}]},"session_id":"test"}'
   sleep 0.3
-  echo -n 'writing...' >&1
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/app.ex"}}]},"session_id":"test"}'
   sleep 0.3
-  echo -n '","result":"Changes applied with chunks","cost_usd":0.30,"duration_ms":5000,"num_turns":12}' >&1
-  echo "" >&1
-  exit 0
-fi
-
-if [[ "$PROMPT" == *"STDERR_MIX"* ]]; then
-  # Simulates real claude --print behavior: progress on stderr (merged
-  # into stdout by Port's :stderr_to_stdout), final JSON on stdout.
-  echo "Thinking..." >&2
-  sleep 0.2
-  echo "Reading files..." >&2
-  sleep 0.2
-  echo "Writing code..." >&2
-  echo '{"result":"Changes applied with stderr noise","cost_usd":0.18,"duration_ms":4000,"num_turns":5}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"Changes applied with chunks","duration_ms":5000,"num_turns":12,"total_cost_usd":0.30,"session_id":"test"}'
   exit 0
 fi
 
@@ -63,7 +49,13 @@ if [[ "$PROMPT" == *"RAW_TEXT"* ]]; then
   exit 0
 fi
 
-# Default: return valid JSON result
-cat <<'EOF'
-{"result":"Changes applied successfully","cost_usd":0.26,"duration_ms":70000,"num_turns":8}
-EOF
+if [[ "$PROMPT" == *"ERROR_RESULT"* ]]; then
+  echo '{"type":"system","subtype":"init","cwd":"/tmp","session_id":"test"}'
+  echo '{"type":"result","subtype":"error","is_error":true,"result":"Tool execution failed: permission denied","duration_ms":500,"num_turns":1,"total_cost_usd":0.02,"session_id":"test"}'
+  exit 0
+fi
+
+# Default: return valid NDJSON stream
+echo '{"type":"system","subtype":"init","cwd":"/tmp","session_id":"test"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"I will implement this."}]},"session_id":"test"}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Changes applied successfully","duration_ms":70000,"num_turns":8,"total_cost_usd":0.26,"session_id":"test"}'

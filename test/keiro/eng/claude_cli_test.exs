@@ -25,13 +25,15 @@ defmodule Keiro.Eng.ClaudeCliTest do
   end
 
   describe "run/3" do
-    test "returns parsed JSON on success" do
+    test "returns parsed NDJSON result on success" do
       assert {:ok, result} =
                ClaudeCli.run("implement this", System.tmp_dir!(), bin: @mock_claude)
 
       assert result["result"] == "Changes applied successfully"
       assert result["cost_usd"] == 0.26
       assert result["num_turns"] == 8
+      assert result["duration_ms"] == 70_000
+      assert result["session_id"] == "test"
     end
 
     test "returns error when binary not found" do
@@ -46,24 +48,19 @@ defmodule Keiro.Eng.ClaudeCliTest do
       assert msg =~ "claude exited with code"
     end
 
-    test "handles non-JSON stdout gracefully" do
+    test "returns error when result event has is_error true (exit 0)" do
+      assert {:error, msg} =
+               ClaudeCli.run("ERROR_RESULT test", System.tmp_dir!(), bin: @mock_claude)
+
+      assert msg =~ "permission denied"
+    end
+
+    test "handles non-JSON stdout gracefully (legacy fallback)" do
       assert {:ok, result} =
                ClaudeCli.run("RAW_TEXT output", System.tmp_dir!(), bin: @mock_claude)
 
       assert result["parse_error"] == true
       assert is_binary(result["result"])
-    end
-
-    test "extracts JSON from mixed stderr+stdout output" do
-      # STDERR_MIX mock sends progress on stderr and JSON on stdout.
-      # With :stderr_to_stdout, Port merges them — parse_result must
-      # extract the JSON line from the noise.
-      assert {:ok, result} =
-               ClaudeCli.run("STDERR_MIX output", System.tmp_dir!(), bin: @mock_claude)
-
-      assert result["result"] == "Changes applied with stderr noise"
-      assert result["cost_usd"] == 0.18
-      assert result["num_turns"] == 5
     end
 
     test "accepts custom allowed_tools option" do
@@ -104,9 +101,9 @@ defmodule Keiro.Eng.ClaudeCliTest do
       assert msg =~ "idle for 200ms"
     end
 
-    test "chunked output resets idle timer — process completes" do
-      # CHUNKED mock sends data every 300ms. With a 500ms idle_timeout,
-      # each chunk resets the timer so it never fires.
+    test "chunked NDJSON events reset idle timer — process completes" do
+      # CHUNKED mock sends NDJSON events every 300ms. With a 500ms idle_timeout,
+      # each event resets the timer so it never fires.
       assert {:ok, result} =
                ClaudeCli.run("CHUNKED output", System.tmp_dir!(),
                  bin: @mock_claude,
@@ -114,6 +111,7 @@ defmodule Keiro.Eng.ClaudeCliTest do
                )
 
       assert result["result"] == "Changes applied with chunks"
+      assert result["num_turns"] == 12
     end
 
     test "respects CLAUDE_IDLE_TIMEOUT_MS env var" do
@@ -170,6 +168,45 @@ defmodule Keiro.Eng.ClaudeCliTest do
       after
         System.delete_env("CLAUDE_MAX_TIMEOUT_MS")
       end
+    end
+  end
+
+  describe "parse_stream_result/1" do
+    test "extracts result from NDJSON stream" do
+      stream = """
+      {"type":"system","subtype":"init","cwd":"/tmp","session_id":"s1"}
+      {"type":"assistant","message":{"content":[{"type":"text","text":"Working..."}]},"session_id":"s1"}
+      {"type":"result","subtype":"success","is_error":false,"result":"Done","duration_ms":1000,"num_turns":3,"total_cost_usd":0.05,"session_id":"s1"}
+      """
+
+      assert {:ok, result} = ClaudeCli.parse_stream_result(stream)
+      assert result["result"] == "Done"
+      assert result["cost_usd"] == 0.05
+      assert result["num_turns"] == 3
+      assert result["duration_ms"] == 1000
+      assert result["session_id"] == "s1"
+    end
+
+    test "returns error for is_error result events" do
+      stream = """
+      {"type":"system","subtype":"init","cwd":"/tmp","session_id":"s1"}
+      {"type":"result","subtype":"error","is_error":true,"result":"failed hard","duration_ms":100,"num_turns":1,"total_cost_usd":0.01,"session_id":"s1"}
+      """
+
+      assert {:error, "failed hard"} = ClaudeCli.parse_stream_result(stream)
+    end
+
+    test "falls back to legacy JSON parsing when no NDJSON events" do
+      output = ~s|{"result":"legacy output","cost_usd":0.10,"num_turns":2}|
+
+      assert {:ok, result} = ClaudeCli.parse_stream_result(output)
+      assert result["result"] == "legacy output"
+    end
+
+    test "handles plain text fallback" do
+      assert {:ok, result} = ClaudeCli.parse_stream_result("just some text\n")
+      assert result["parse_error"] == true
+      assert result["result"] == "just some text"
     end
   end
 end

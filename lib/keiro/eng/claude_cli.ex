@@ -4,10 +4,10 @@ defmodule Keiro.Eng.ClaudeCli do
 
   Configurable via `CLAUDE_BIN_PATH` env or application config `:claude_bin_path`.
 
-  Uses a **per-chunk idle timeout** instead of a fixed deadline. As long as
-  Claude is producing output (reading files, writing code, running tests),
-  the timer resets. Only when output stops for `:idle_timeout` ms does the
-  process get killed. A hard `:max_timeout` cap prevents runaway sessions.
+  Uses `--output-format stream-json` for real-time NDJSON events. Each event
+  resets the idle timer, so Claude can work for as long as it needs as long as
+  it's making progress (reading files, writing code, running tests). A hard
+  `:max_timeout` cap prevents runaway sessions.
   """
 
   require Logger
@@ -27,7 +27,7 @@ defmodule Keiro.Eng.ClaudeCli do
   end
 
   @doc """
-  Run Claude Code in non-interactive `--print` mode.
+  Run Claude Code in non-interactive `--print` mode with streaming JSON output.
 
   Sends `prompt` to Claude Code as a subprocess, working in `repo_path`.
 
@@ -64,7 +64,8 @@ defmodule Keiro.Eng.ClaudeCli do
       "-p",
       prompt,
       "--output-format",
-      "json",
+      "stream-json",
+      "--verbose",
       "--allowedTools",
       allowed_tools,
       "--max-turns",
@@ -82,7 +83,6 @@ defmodule Keiro.Eng.ClaudeCli do
         Port.open({:spawn_executable, bin}, [
           :binary,
           :exit_status,
-          :stderr_to_stdout,
           {:args, args},
           {:cd, repo_path}
         ])
@@ -91,7 +91,7 @@ defmodule Keiro.Eng.ClaudeCli do
 
       case collect_port_output(port, [], idle_timeout, deadline) do
         {:done, output, 0} ->
-          parse_result(output)
+          parse_stream_result(output)
 
         {:done, output, code} ->
           {:error, "claude exited with code #{code}: #{String.slice(output, 0, 500)}"}
@@ -175,10 +175,68 @@ defmodule Keiro.Eng.ClaudeCli do
     end
   end
 
-  defp parse_result(output) do
-    # With :stderr_to_stdout, output may contain stderr noise mixed with
-    # the final JSON. Try parsing the full output first, then try to
-    # extract a JSON object from the last line(s).
+  @doc """
+  Parse NDJSON stream output from `claude --print --output-format stream-json`.
+
+  Extracts the final `{"type":"result",...}` event and normalizes it to the
+  same shape as the old `--output-format json` output for backward compat.
+  """
+  def parse_stream_result(output) do
+    lines =
+      output
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    # Parse all NDJSON events
+    events =
+      Enum.flat_map(lines, fn line ->
+        case Jason.decode(line) do
+          {:ok, %{"type" => _} = event} -> [event]
+          _ -> []
+        end
+      end)
+
+    # Find the result event (last one with type "result")
+    result_event =
+      events
+      |> Enum.reverse()
+      |> Enum.find(&(&1["type"] == "result"))
+
+    case result_event do
+      %{"subtype" => "success"} = evt ->
+        {:ok, normalize_result(evt)}
+
+      %{"is_error" => true} = evt ->
+        {:error, evt["result"] || "claude returned an error"}
+
+      %{} = evt ->
+        # Result event exists but may not have subtype — check is_error
+        if evt["is_error"] do
+          {:error, evt["result"] || "claude returned an error"}
+        else
+          {:ok, normalize_result(evt)}
+        end
+
+      nil ->
+        # No result event found — try legacy single-JSON parse as fallback
+        parse_legacy_result(output)
+    end
+  end
+
+  defp normalize_result(evt) do
+    %{
+      "result" => evt["result"],
+      "cost_usd" => evt["total_cost_usd"],
+      "duration_ms" => evt["duration_ms"],
+      "num_turns" => evt["num_turns"],
+      "session_id" => evt["session_id"],
+      "usage" => evt["usage"]
+    }
+  end
+
+  # Fallback for non-stream output (mock scripts, legacy usage)
+  defp parse_legacy_result(output) do
     case Jason.decode(output) do
       {:ok, result} when is_map(result) ->
         {:ok, result}
@@ -186,14 +244,12 @@ defmodule Keiro.Eng.ClaudeCli do
       {:ok, other} ->
         {:ok, %{"result" => other}}
 
-      {:error, _reason} ->
+      {:error, _} ->
         extract_json_from_mixed_output(output)
     end
   end
 
   defp extract_json_from_mixed_output(output) do
-    # Try each line from the end, looking for a valid JSON object.
-    # claude --print --output-format json emits the JSON as the last output.
     lines = String.split(output, "\n")
 
     result =
