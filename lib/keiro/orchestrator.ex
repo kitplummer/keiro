@@ -472,28 +472,65 @@ defmodule Keiro.Orchestrator do
 
     Keiro.Telemetry.span([:keiro, :orchestrator, :dispatch], metadata, fn ->
       client = if repo_path, do: BeadsClient.new(repo_path), else: nil
+      branch = branch_name_for_bead(bead)
+      base = Map.get(tool_context, :base_branch, "main")
 
-      eng_stage = %Stage{
-        name: "engineer",
-        agent_module: Keiro.Eng.EngineerAgent,
-        prompt_fn: fn bead, prev_stages -> eng_prompt(bead, validated, prev_stages) end,
-        runner_fn: &claude_engineer_runner/2,
-        timeout: timeout
-      }
+      # Acquire isolated worktree
+      provider = Keiro.Workspace.GitWorktree.new(repo_path)
 
-      case Pipeline.run(bead, [eng_stage], tool_context: tool_context) do
-        {:ok, result} ->
-          Logger.info("Pipeline completed for bead #{bead.id}")
-          result = attach_outcome_context(result, client, bead.id)
-          if client, do: BeadsClient.close(client, bead.id)
-          if client, do: create_deploy_bead(client, bead, result)
-          {:ok, result}
+      case Keiro.Workspace.GitWorktree.acquire(provider, branch: branch, start_point: base) do
+        {:ok, workspace} ->
+          try do
+            # Run pipeline in worktree, not repo_path
+            wt_tool_context =
+              tool_context
+              |> Map.put(:repo_path, workspace.path)
+              |> Map.put(:branch, branch)
+              |> Map.put(:base_branch, base)
 
-        {:error, result} ->
-          Logger.warning("Pipeline failed at stage #{result.error_stage} for bead #{bead.id}")
-          result = attach_outcome_context(result, client, bead.id)
-          if client, do: BeadsClient.update_status(client, bead.id, "blocked")
-          {:error, result}
+            eng_stage = %Stage{
+              name: "engineer",
+              agent_module: Keiro.Eng.EngineerAgent,
+              prompt_fn: fn _bead, _prev_stages ->
+                eng_prompt(validated, branch, base)
+              end,
+              runner_fn: &claude_engineer_runner/2,
+              timeout: timeout
+            }
+
+            case Pipeline.run(bead, [eng_stage], tool_context: wt_tool_context) do
+              {:ok, result} ->
+                Logger.info("Pipeline completed for bead #{bead.id}")
+                result = attach_outcome_context(result, client, bead.id)
+                if client, do: BeadsClient.close(client, bead.id)
+                if client, do: create_deploy_bead(client, bead, result)
+                {:ok, result}
+
+              {:error, result} ->
+                Logger.warning(
+                  "Pipeline failed at stage #{result.error_stage} for bead #{bead.id}"
+                )
+
+                result = attach_outcome_context(result, client, bead.id)
+                if client, do: BeadsClient.update_status(client, bead.id, "blocked")
+                {:error, result}
+            end
+          after
+            # Always clean up worktree
+            Keiro.Workspace.GitWorktree.release(provider, workspace)
+          end
+
+        {:error, reason} ->
+          Logger.error("Failed to create worktree for bead #{bead.id}: #{reason}")
+
+          {:error,
+           %Pipeline.Result{
+             status: :error,
+             error_stage: "workspace",
+             stages: [],
+             outcome: :failed,
+             outcome_context: %{error: reason}
+           }}
       end
     end)
   end
@@ -515,14 +552,33 @@ defmodule Keiro.Orchestrator do
     Keiro.Eng.ClaudeCli.run(prompt, repo_path)
   end
 
-  defp eng_prompt(_bead, validated, _prev_stages) do
+  defp eng_prompt(validated, branch, base) do
     objective = PromptAssembler.assemble_task_prompt(validated)
 
     """
     #{objective}
 
-    Implement this task: create a branch, write the code, run tests, and open a PR.
+    You are working in an isolated git worktree. The branch `#{branch}` has already been
+    created from `#{base}`. Do NOT create a new branch or checkout another branch.
+
+    Your workflow:
+    1. Read existing code to understand patterns and conventions
+    2. Implement the changes incrementally — run tests after each change
+    3. Stage all changed files and commit with a descriptive message
+    4. Push the branch: `git push -u origin #{branch}`
+    5. Create a pull request targeting `#{base}`
     """
+  end
+
+  defp branch_name_for_bead(bead) do
+    slug =
+      bead.title
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "-")
+      |> String.trim("-")
+      |> String.slice(0, 40)
+
+    "eng/#{bead.id}-#{slug}"
   end
 
   defp create_deploy_bead(client, eng_bead, eng_result) do

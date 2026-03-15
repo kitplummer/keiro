@@ -179,6 +179,22 @@ defmodule Keiro.Eng.ClaudeCliTest do
     end
   end
 
+  describe "pty_wrap" do
+    test "pty-wrapped process completes and captures output" do
+      # Run with pty_wrap: true (the default) to verify script wrapper
+      # works end-to-end with stdin redirected from /dev/null
+      assert {:ok, result} =
+               ClaudeCli.run(
+                 "implement this",
+                 System.tmp_dir!(),
+                 bin: @mock_claude,
+                 pty_wrap: true
+               )
+
+      assert result["result"] =~ "Changes applied"
+    end
+  end
+
   describe "parse_stream_result/1" do
     test "extracts result from NDJSON stream" do
       stream = """

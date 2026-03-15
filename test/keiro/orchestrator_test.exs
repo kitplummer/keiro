@@ -10,6 +10,41 @@ defmodule Keiro.OrchestratorTest do
   @mock_claude Path.expand("../support/mock_claude.sh", __DIR__)
   @mock_claude_fail Path.expand("../support/mock_claude_fail.sh", __DIR__)
 
+  # Creates a temporary git repo with an initial commit and a configured origin
+  # so that worktree acquire with start_point can work.
+  defp setup_git_repo do
+    tmp = Path.join(System.tmp_dir!(), "keiro-orch-test-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+
+    System.cmd("git", ["init", "-b", "main", tmp])
+    File.write!(Path.join(tmp, "README.md"), "test")
+    System.cmd("git", ["add", "."], cd: tmp)
+
+    System.cmd(
+      "git",
+      ["-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "init"],
+      cd: tmp
+    )
+
+    # Set up a local origin pointing to itself so fetch/push work
+    System.cmd("git", ["remote", "add", "origin", tmp], cd: tmp)
+    # Fetch so origin/main ref exists
+    System.cmd("git", ["fetch", "origin"], cd: tmp)
+
+    tmp
+  end
+
+  defp cleanup_git_repo(path) do
+    # Clean up worktrees first to avoid git locks
+    worktree_dir = Path.join(path, ".worktrees")
+
+    if File.dir?(worktree_dir) do
+      System.cmd("git", ["worktree", "prune"], cd: path, stderr_to_stdout: true)
+    end
+
+    File.rm_rf!(path)
+  end
+
   describe "route/1" do
     test "routes ops-labeled beads to UplinkAgent" do
       bead = %Bead{id: "gl-001", title: "Fix crash", labels: ["ops"]}
@@ -171,11 +206,12 @@ defmodule Keiro.OrchestratorTest do
 
     test "do_poll :ok path with on_result callback" do
       test_pid = self()
+      repo = setup_git_repo()
 
       with_env(%{"BEADS_BD_PATH" => @mock_bd_eng, "CLAUDE_BIN_PATH" => @mock_claude}, fn ->
         {:ok, pid} =
           Orchestrator.start_link(
-            repo_path: System.tmp_dir!(),
+            repo_path: repo,
             poll_interval: 600_000,
             name: {:global, {__MODULE__, :ok_callback_test}},
             on_result: fn result -> send(test_pid, {:got_result, result}) end
@@ -186,26 +222,39 @@ defmodule Keiro.OrchestratorTest do
         assert_received {:got_result, {:ok, _}}
         Orchestrator.stop(pid)
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
   end
 
   describe "deploy bead handoff" do
     test "successful eng pipeline creates a deploy bead" do
+      repo = setup_git_repo()
+
       with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
-        result = Orchestrator.run_next(repo_path: System.tmp_dir!())
+        result = Orchestrator.run_next(repo_path: repo)
         assert {:ok, pipeline_result} = result
         assert pipeline_result.status == :ok
         # deploy bead creation is a side effect — mock_bd_eng returns gl-200 for create
         # and handles link. If these weren't handled, the test would fail.
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
 
     test "failed eng pipeline does not create deploy bead" do
+      repo = setup_git_repo()
+
       with_env(%{"CLAUDE_BIN_PATH" => @mock_claude_fail, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
-        result = Orchestrator.run_next(repo_path: System.tmp_dir!())
+        result = Orchestrator.run_next(repo_path: repo)
         assert {:error, pipeline_result} = result
         assert pipeline_result.error_stage == "engineer"
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
 
     test "eng bead routes to engineer pipeline, not inline deploy" do
@@ -232,11 +281,16 @@ defmodule Keiro.OrchestratorTest do
     end
 
     test "processes eng-labeled bead via pipeline with runner_fn" do
+      repo = setup_git_repo()
+
       with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
-        result = Orchestrator.run_next(repo_path: System.tmp_dir!())
+        result = Orchestrator.run_next(repo_path: repo)
         assert {:ok, pipeline_result} = result
         assert pipeline_result.status == :ok
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
 
     test "returns error for bead with no matching agent" do
@@ -250,11 +304,56 @@ defmodule Keiro.OrchestratorTest do
     # dispatch_agent (ops/arch beads) requires live Jido — tested via integration
 
     test "pipeline failure path marks bead as blocked" do
+      repo = setup_git_repo()
+
       with_env(%{"CLAUDE_BIN_PATH" => @mock_claude_fail, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
-        result = Orchestrator.run_next(repo_path: System.tmp_dir!())
+        result = Orchestrator.run_next(repo_path: repo)
         assert {:error, pipeline_result} = result
         assert pipeline_result.error_stage == "engineer"
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
+    end
+
+    test "worktree cleanup after successful pipeline" do
+      repo = setup_git_repo()
+
+      with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
+        result = Orchestrator.run_next(repo_path: repo)
+        assert {:ok, _} = result
+
+        # Worktree directory should be cleaned up after pipeline completes
+        worktrees = Path.join(repo, ".worktrees")
+
+        if File.dir?(worktrees) do
+          entries = File.ls!(worktrees)
+          assert entries == [], "Worktree directory should be empty after cleanup"
+        end
+      end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
+    end
+
+    test "worktree cleanup after failed pipeline" do
+      repo = setup_git_repo()
+
+      with_env(%{"CLAUDE_BIN_PATH" => @mock_claude_fail, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
+        result = Orchestrator.run_next(repo_path: repo)
+        assert {:error, _} = result
+
+        # Worktree should be cleaned up even on failure
+        worktrees = Path.join(repo, ".worktrees")
+
+        if File.dir?(worktrees) do
+          entries = File.ls!(worktrees)
+          assert entries == [], "Worktree directory should be empty after failure cleanup"
+        end
+      end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
   end
 
@@ -264,41 +363,57 @@ defmodule Keiro.OrchestratorTest do
     end
 
     test "processes all eng-labeled beads" do
+      repo = setup_git_repo()
+
       with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
-        results = Orchestrator.run_all(repo_path: System.tmp_dir!())
+        results = Orchestrator.run_all(repo_path: repo)
         assert length(results) == 1
         [first] = results
         assert first.bead_id == "gl-100"
         assert first.title == "Add login page"
         assert {:ok, _} = first.result
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
   end
 
   describe "TQM integration" do
     test "run_all runs TQM analysis on batch results" do
+      repo = setup_git_repo()
+
       with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
-        results = Orchestrator.run_all(repo_path: System.tmp_dir!())
+        results = Orchestrator.run_all(repo_path: repo)
         # TQM runs silently — no patterns expected for single success
         assert length(results) == 1
         assert {:ok, _} = hd(results).result
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
 
     test "run_all with tqm_enabled: false skips analysis" do
+      repo = setup_git_repo()
+
       with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
-        results = Orchestrator.run_all(repo_path: System.tmp_dir!(), tqm_enabled: false)
+        results = Orchestrator.run_all(repo_path: repo, tqm_enabled: false)
         assert length(results) == 1
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
 
     test "GenServer collects results and runs TQM" do
       test_pid = self()
+      repo = setup_git_repo()
 
       with_env(%{"CLAUDE_BIN_PATH" => @mock_claude, "BEADS_BD_PATH" => @mock_bd_eng}, fn ->
         {:ok, pid} =
           Orchestrator.start_link(
-            repo_path: System.tmp_dir!(),
+            repo_path: repo,
             poll_interval: 600_000,
             name: {:global, {__MODULE__, :tqm_genserver_test}},
             on_result: fn result -> send(test_pid, {:result, result}) end,
@@ -314,6 +429,9 @@ defmodule Keiro.OrchestratorTest do
 
         Orchestrator.stop(pid)
       end)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-orch-test-*")),
+          do: cleanup_git_repo(dir)
     end
 
     test "skips TQM analysis when circuit breaker is tripped" do

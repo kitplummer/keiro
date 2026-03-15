@@ -166,9 +166,14 @@ defmodule Keiro.Eng.ClaudeCli do
 
   # Wraps a command in `script -qfc ... /dev/null` to allocate a PTY.
   # This forces Node.js (Claude Code) to use line-buffered stdout.
+  #
+  # The inner command redirects stdin from /dev/null to prevent the script
+  # shell from exiting on pipe EOF when Erlang Port doesn't write to stdin.
+  # Without this, `script` can terminate prematurely while Claude is still
+  # running, causing output to be lost and triggering idle timeouts.
   defp pty_wrap(claude_args) do
     cmd = Enum.map_join(claude_args, " ", &shell_escape/1)
-    {"/usr/bin/script", ["-qfc", cmd, "/dev/null"]}
+    {"/usr/bin/script", ["-qfc", cmd <> " </dev/null", "/dev/null"]}
   end
 
   defp shell_escape(arg) do

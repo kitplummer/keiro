@@ -98,6 +98,90 @@ defmodule Keiro.WorkspaceTest do
       tmp = Path.join(System.tmp_dir!(), "keiro-wt-test-*")
       for dir <- Path.wildcard(tmp), do: File.rm_rf!(dir)
     end
+
+    test "acquire/2 with explicit branch name" do
+      tmp = Path.join(System.tmp_dir!(), "keiro-wt-branch-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      {_, 0} = System.cmd("git", ["init", tmp])
+      File.write!(Path.join(tmp, "README.md"), "test")
+      {_, 0} = System.cmd("git", ["add", "."], cd: tmp)
+
+      {_, 0} =
+        System.cmd(
+          "git",
+          ["-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "init"],
+          cd: tmp
+        )
+
+      provider = Workspace.GitWorktree.new(tmp)
+      assert {:ok, ws} = Workspace.GitWorktree.acquire(provider, branch: "eng/gl-100-my-feature")
+      assert File.dir?(ws.path)
+      assert ws.metadata.branch == "eng/gl-100-my-feature"
+
+      # Directory name should slug the branch (/ replaced with -)
+      assert ws.path =~ "eng-gl-100-my-feature"
+
+      assert :ok = Workspace.release(provider, ws)
+      refute File.dir?(ws.path)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-wt-branch-*")),
+          do: File.rm_rf!(dir)
+    end
+
+    test "acquire/2 with start_point falls back when no remote" do
+      tmp =
+        Path.join(System.tmp_dir!(), "keiro-wt-start-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+
+      {_, 0} = System.cmd("git", ["init", tmp])
+      File.write!(Path.join(tmp, "README.md"), "test")
+      {_, 0} = System.cmd("git", ["add", "."], cd: tmp)
+
+      {_, 0} =
+        System.cmd(
+          "git",
+          ["-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "init"],
+          cd: tmp
+        )
+
+      # No remote configured — fetch will fail, worktree creation should fail
+      # because origin/main doesn't exist
+      provider = Workspace.GitWorktree.new(tmp)
+      result = Workspace.GitWorktree.acquire(provider, branch: "test-branch", start_point: "main")
+      assert {:error, msg} = result
+      assert msg =~ "Failed to create worktree"
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-wt-start-*")),
+          do: File.rm_rf!(dir)
+    end
+
+    test "acquire/2 without start_point creates worktree from HEAD" do
+      tmp = Path.join(System.tmp_dir!(), "keiro-wt-head-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      {_, 0} = System.cmd("git", ["init", tmp])
+      File.write!(Path.join(tmp, "README.md"), "test")
+      {_, 0} = System.cmd("git", ["add", "."], cd: tmp)
+
+      {_, 0} =
+        System.cmd(
+          "git",
+          ["-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "init"],
+          cd: tmp
+        )
+
+      provider = Workspace.GitWorktree.new(tmp)
+      assert {:ok, ws} = Workspace.GitWorktree.acquire(provider, branch: "custom-branch")
+      assert ws.metadata.branch == "custom-branch"
+      assert File.dir?(ws.path)
+
+      assert :ok = Workspace.release(provider, ws)
+    after
+      for dir <- Path.wildcard(Path.join(System.tmp_dir!(), "keiro-wt-head-*")),
+          do: File.rm_rf!(dir)
+    end
   end
 
   describe "dispatch" do

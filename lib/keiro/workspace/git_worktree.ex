@@ -27,12 +27,38 @@ defmodule Keiro.Workspace.GitWorktree do
   end
 
   @impl Keiro.Workspace
-  def acquire(%__MODULE__{repo_path: repo_path, worktree_dir: worktree_dir}) do
-    branch = "workspace-" <> random_suffix()
-    worktree_path = Path.join([repo_path, worktree_dir, branch])
+  def acquire(%__MODULE__{} = provider), do: acquire(provider, [])
+
+  @doc """
+  Acquire a worktree with explicit options.
+
+  Options:
+  - `:branch` — branch name to create (default: "workspace-<random>")
+  - `:start_point` — base branch to start from (default: "HEAD")
+
+  When a `start_point` is given, fetches `origin/<start_point>` first and
+  creates the worktree from that ref, ensuring a fresh base.
+  """
+  @spec acquire(t(), keyword()) :: {:ok, Keiro.Workspace.workspace()} | {:error, term()}
+  def acquire(%__MODULE__{repo_path: repo_path, worktree_dir: worktree_dir}, opts) do
+    branch = Keyword.get(opts, :branch, "workspace-" <> random_suffix())
+    start_point = Keyword.get(opts, :start_point)
     git = GitCli.git_path()
 
-    case GitCli.run(git, ["worktree", "add", "-b", branch, worktree_path], cd: repo_path) do
+    # Slug the branch for directory name
+    dir_name = branch |> String.replace("/", "-") |> String.replace(~r/[^a-zA-Z0-9_-]/, "-")
+    worktree_path = Path.join([repo_path, worktree_dir, dir_name])
+
+    # When a start_point is specified, fetch from remote and branch from origin/<start_point>
+    {create_args, _fetch_result} =
+      if start_point do
+        fetch_result = GitCli.run(git, ["fetch", "origin", start_point], cd: repo_path)
+        {["worktree", "add", "-b", branch, worktree_path, "origin/#{start_point}"], fetch_result}
+      else
+        {["worktree", "add", "-b", branch, worktree_path], nil}
+      end
+
+    case GitCli.run(git, create_args, cd: repo_path) do
       {:ok, _output} ->
         {:ok, %{path: worktree_path, metadata: %{provider: :git_worktree, branch: branch}}}
 
