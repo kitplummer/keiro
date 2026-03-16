@@ -10,24 +10,28 @@ Built on Elixir/BEAM with [Jido](https://jido.run) as the agent runtime. Polyglo
 
 ```
 Keiro CAO
-├── Orchestrator (Elixir/Jido)
-│   ├── Governance ── budget caps, approval gates, autonomy dial
-│   ├── TQM ──────── pattern detection, self-improvement beads
-│   └── Router ────── cost-aware model selection (3-tier cascade)
+├── Orchestrator ─── continuous polling loop, circuit breaker, task routing
+│   ├── Governance ── input validation, prompt assembly, approval gates
+│   ├── TQM ──────── pattern detection, remediation beads, dedup cooldown
+│   └── Pipeline ──── multi-stage runner with structured outcomes
 │
-├── Protocol Boundaries
-│   ├── A2A ── agent-to-agent (polyglot: any language, any runtime)
-│   └── MCP ── tool/context interface (standardized tool discovery)
+├── Orgs
+│   ├── Engineering
+│   │   ├── EngineerAgent ── Claude Code in isolated git worktrees
+│   │   └── Actions ──────── file I/O, shell, git commit/push, gh pr create
+│   ├── Operations
+│   │   ├── UplinkAgent ──── fly deploy, smoke test, SSH, logs
+│   │   └── HealthMonitor ── periodic checks, investigation beads
+│   └── Architecture
+│       └── ArchitectAgent ── issue triage, backlog review, ADR gap analysis
 │
-├── Orgs (accreted as the business grows)
-│   ├── Engineering ── planner, implementer, debugger, security, archivist
-│   ├── Operations ─── deployer, monitor, responder (SRE)
-│   ├── Finance ────── budget enforcement, cost tracking, ledger
-│   └── ... ─────────── GTM, Legal, Product (future)
+├── Workspace Isolation
+│   ├── GitWorktree ── branch-per-task, fetch from origin, cleanup after
+│   ├── TempDir ────── ephemeral scratch directories
+│   └── Directory ──── passthrough (no isolation)
 │
 └── Memory
-    ├── Beads ── distributed task graph, agent mailboxes
-    ├── Dolt ─── version-controlled SQL (branch-per-agent)
+    ├── Beads ── distributed task graph (bd CLI)
     └── Git ──── repo state, worktrees, audit trail
 ```
 
@@ -43,7 +47,18 @@ Keiro's thesis:
 
 ## Status
 
-**Phase 0 — Foundation.** Jido runtime integrated. ADRs migrated from prior Rust prototype.
+**Phase 1 — Autonomous Loop.** Keiro runs continuous batch sessions end-to-end: engineering tasks are picked from the beads backlog, implemented in isolated git worktrees, tested, committed, pushed, and PRs opened — then deploy beads are created and handed off to the ops org for fly.io deployment and smoke testing.
+
+Working today:
+- **Continuous mode** (`mix keiro.continuous`) — budget-paced polling loop with stall watchdog and graceful shutdown
+- **Engineer pipeline** — Claude Code subprocess in isolated git worktrees, NDJSON streaming with idle/max timeout
+- **Ops org** — UplinkAgent with fly deploy, smoke test, SSH, and log actions
+- **Architect org** — GitHub issue triage, backlog review, ADR gap analysis, periodic scans
+- **Governance** — input validation, prompt assembly, batch auto-approval
+- **TQM** — pattern detection on batch results, remediation bead creation with dedup cooldown
+- **Circuit breaker** — trips after N failures in a time window, manual resume
+- **Health monitoring** — periodic HTTP + fly status checks, auto-creates investigation beads
+- **Telemetry** — structured spans for dispatch, pipeline, and agent execution
 
 The first Keiro instance operates [LowEndInsight](https://lowendinsight.dev) — an open-source software risk analysis product. LEI is the product of this CAO: built, deployed, and operated by its agents. It serves as the das blinkenlights — proof the system works end-to-end, from engineering through delivery.
 
@@ -68,13 +83,22 @@ Architectural decisions that define Keiro. Migrated from the prior prototype; th
 ## Getting Started
 
 ```bash
-git clone <repo-url> && cd keiro
+git clone https://github.com/kitplummer/keiro.git && cd keiro
 mix deps.get
 mix compile
-mix test
+mix test     # 436 tests + 1 doctest
 ```
 
-Requires Elixir 1.17+ and Erlang/OTP 26+.
+Requires Elixir 1.17+, Erlang/OTP 26+, and [bd](https://github.com/beads-org/beads-cli) for task management.
+
+### Running the continuous loop
+
+```bash
+# Point at a beads-enabled repo with eng/ops/arch beads in the backlog
+mix keiro.continuous --repo-path /path/to/repo --budget 5 --hours 2
+```
+
+This polls for ready beads, routes them to the appropriate agent, and loops until budget or time is exhausted.
 
 ## License
 
