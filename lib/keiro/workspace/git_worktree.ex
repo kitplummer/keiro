@@ -58,6 +58,9 @@ defmodule Keiro.Workspace.GitWorktree do
         {["worktree", "add", "-b", branch, worktree_path], nil}
       end
 
+    # Ensure repo isn't stuck in bare state from previous worktree operations
+    fix_bare_config(git, repo_path)
+
     # Clean up any stale branch/worktree from a previous failed attempt
     cleanup_stale(git, repo_path, branch, worktree_path)
 
@@ -78,10 +81,23 @@ defmodule Keiro.Workspace.GitWorktree do
     with {:ok, _} <-
            GitCli.run(git, ["worktree", "remove", "--force", worktree_path], cd: repo_path),
          {:ok, _} <- GitCli.run(git, ["branch", "-D", branch], cd: repo_path) do
+      # Worktree operations can leave stale core.bare/core.worktree config entries
+      # which make the parent repo appear bare. Clean them up.
+      fix_bare_config(git, repo_path)
       :ok
     else
-      {:error, reason} -> {:error, "Failed to clean up worktree: #{reason}"}
+      {:error, reason} ->
+        fix_bare_config(git, repo_path)
+        {:error, "Failed to clean up worktree: #{reason}"}
     end
+  end
+
+  # Worktree add/remove can leave stale core.bare and core.worktree config entries
+  # that make the parent repo appear bare, preventing normal git operations.
+  defp fix_bare_config(git, repo_path) do
+    GitCli.run(git, ["config", "--unset", "core.bare"], cd: repo_path)
+    GitCli.run(git, ["config", "--unset", "core.worktree"], cd: repo_path)
+    :ok
   end
 
   # If a branch or worktree directory already exists from a previous failed attempt,
