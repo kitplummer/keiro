@@ -66,6 +66,8 @@ defmodule Keiro.Workspace.GitWorktree do
 
     case GitCli.run(git, create_args, cd: repo_path) do
       {:ok, _output} ->
+        # Worktree add can set core.bare=true on the parent repo — fix it immediately
+        fix_bare_config(git, repo_path)
         {:ok, %{path: worktree_path, metadata: %{provider: :git_worktree, branch: branch}}}
 
       {:error, reason} ->
@@ -95,7 +97,9 @@ defmodule Keiro.Workspace.GitWorktree do
   # Worktree add/remove can leave stale core.bare and core.worktree config entries
   # that make the parent repo appear bare, preventing normal git operations.
   defp fix_bare_config(git, repo_path) do
-    GitCli.run(git, ["config", "--unset", "core.bare"], cd: repo_path)
+    # Explicitly set core.bare=false rather than unsetting — git can re-infer bare
+    # state from directory structure if the key is absent, but an explicit false sticks.
+    GitCli.run(git, ["config", "core.bare", "false"], cd: repo_path)
     GitCli.run(git, ["config", "--unset", "core.worktree"], cd: repo_path)
     :ok
   end
