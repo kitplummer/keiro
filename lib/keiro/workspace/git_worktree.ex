@@ -58,6 +58,9 @@ defmodule Keiro.Workspace.GitWorktree do
         {["worktree", "add", "-b", branch, worktree_path], nil}
       end
 
+    # Clean up any stale branch/worktree from a previous failed attempt
+    cleanup_stale(git, repo_path, branch, worktree_path)
+
     case GitCli.run(git, create_args, cd: repo_path) do
       {:ok, _output} ->
         {:ok, %{path: worktree_path, metadata: %{provider: :git_worktree, branch: branch}}}
@@ -79,6 +82,20 @@ defmodule Keiro.Workspace.GitWorktree do
     else
       {:error, reason} -> {:error, "Failed to clean up worktree: #{reason}"}
     end
+  end
+
+  # If a branch or worktree directory already exists from a previous failed attempt,
+  # remove them so we can create a fresh one. This handles the case where a pipeline
+  # failed after branch creation but before (or during) cleanup.
+  defp cleanup_stale(git, repo_path, branch, worktree_path) do
+    # Remove stale worktree directory if it exists
+    if File.exists?(worktree_path) do
+      GitCli.run(git, ["worktree", "remove", "--force", worktree_path], cd: repo_path)
+    end
+
+    # Delete stale branch if it exists (only local, not remote)
+    GitCli.run(git, ["branch", "-D", branch], cd: repo_path)
+    :ok
   end
 
   defp random_suffix do

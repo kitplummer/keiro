@@ -209,16 +209,25 @@ defmodule Keiro.Ops.HealthMonitor do
   defp default_fly_check(app_name) do
     fly_bin = Application.get_env(:keiro, :fly_bin_path, "fly")
 
-    case System.cmd(fly_bin, ["status", "--app", app_name], stderr_to_stdout: true) do
-      {output, 0} ->
-        if String.contains?(output, "running") or String.contains?(output, "deployed") do
-          :ok
-        else
-          {:error, "fly status: not running"}
-        end
+    # Skip fly check if binary isn't installed — this is a local dev environment,
+    # not a missing deployment. Only real fly status failures should trigger alerts.
+    case System.find_executable(fly_bin) do
+      nil ->
+        Logger.debug("HealthMonitor: fly binary not found, skipping fly check")
+        :ok
 
-      {output, _code} ->
-        {:error, "fly status failed: #{String.slice(output, 0, 200)}"}
+      _path ->
+        case System.cmd(fly_bin, ["status", "--app", app_name], stderr_to_stdout: true) do
+          {output, 0} ->
+            if String.contains?(output, "running") or String.contains?(output, "deployed") do
+              :ok
+            else
+              {:error, "fly status: not running"}
+            end
+
+          {output, _code} ->
+            {:error, "fly status failed: #{String.slice(output, 0, 200)}"}
+        end
     end
   rescue
     e -> {:error, "fly status error: #{Exception.message(e)}"}
