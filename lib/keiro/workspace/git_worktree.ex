@@ -80,6 +80,9 @@ defmodule Keiro.Workspace.GitWorktree do
     git = GitCli.git_path()
     branch = metadata[:branch]
 
+    # Agent operations inside the worktree can corrupt parent config — fix before cleanup
+    fix_bare_config(git, repo_path)
+
     with {:ok, _} <-
            GitCli.run(git, ["worktree", "remove", "--force", worktree_path], cd: repo_path),
          {:ok, _} <- GitCli.run(git, ["branch", "-D", branch], cd: repo_path) do
